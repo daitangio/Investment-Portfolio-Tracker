@@ -51,9 +51,7 @@ Local ports: frontend 3000, backend 8010 (API docs at `http://localhost:8010/doc
 
 ### Backend (`backend/`)
 
-Layered: `routers/` (thin HTTP layer, wired in `main.py` under `/api/v1/*`) → `services/` (business logic) → `shared/` (all SQLAlchemy models in `models.py`, JWT auth, Redis cache, DB session).
-
-- `database.py`: async engine + `get_db` dependency that commits on success and rolls back on exception. App startup runs `Base.metadata.create_all`; Alembic (`backend/alembic/`, async `env.py`) is for production migrations.
+Layered: `routers/` (thin HTTP layer, wired in `main.py` under `/api/v1/*` — except `bank_import` which has no prefix) → `services/` (business logic) → `shared/` (`models.py`, `auth.py`, `cache.py`, `assets.py`). The primary `database.py` (async engine + `get_db` dependency that commits on success and rolls back on exception) is at backend root. **Note**: App startup runs `Base.metadata.create_all` via lifespan in `main.py` — disable or comment this in production to avoid conflicts with Alembic (`backend/alembic/`, async `env.py`) migrations.
 - `config.py`: pydantic-settings `Settings` from env vars; holds AU localization defaults (default currency AUD, tax year starts July 1, CGT discount rate — 0.50 individuals / 0.3333 SMSF).
 - **Portfolio engine** (`services/portfolio_engine.py`) and **analytics engine** (`services/analytics_engine.py`) are pure computation with injected data — FIFO cost basis, per-transaction FX, realized/unrealized P&L, drawdowns, benchmark comparison.
 - **Currency**: everything converts through an AUD pivot. The `FXService` class in `services/fx_service.py` handles all currency conversion. It uses Yahoo Finance as primary FX source with RBA f11.1 XLS/fallback API as secondary. Key details:
@@ -71,8 +69,8 @@ Layered: `routers/` (thin HTTP layer, wired in `main.py` under `/api/v1/*`) → 
 
 Next.js 15 App Router, TypeScript, Tailwind, TanStack Query, Recharts.
 
-- `app/dashboard/` has one nested route per tab: transactions, analytics (`page.tsx`), markets, watchlist, advisor, analysis, tax, import.
-- **Auth**: JWT stored in localStorage (`access_token`), injected by the axios interceptor in `lib/api/client.ts`; 401/403 redirects to `/login`. Display currency persists as `display_currency` in localStorage (`lib/context/CurrencyContext.tsx`, defaults AUD).
+- `app/dashboard/` has nested routes for: advisor, analysis, import, markets, tax, transactions, watchlist. The main dashboard view (`page.tsx`) displays analytics and portfolio overview.
+- **Auth**: JWT stored in localStorage (`access_token`), injected by the axios interceptor in `lib/api/client.ts`; 401/403 redirects to `/login`. Display currency persists as `display_currency` in localStorage (`lib/context/CurrencyContext.tsx`, defaults AUD) — **currently limited to "AUD" | "USD" types**.
 - Data fetching lives in TanStack Query hooks in `lib/hooks/` (one per domain, e.g. `usePortfolio.ts`, `useAnalytics.ts`).
 
 ## Workflow conventions
