@@ -56,7 +56,13 @@ Layered: `routers/` (thin HTTP layer, wired in `main.py` under `/api/v1/*`) → 
 - `database.py`: async engine + `get_db` dependency that commits on success and rolls back on exception. App startup runs `Base.metadata.create_all`; Alembic (`backend/alembic/`, async `env.py`) is for production migrations.
 - `config.py`: pydantic-settings `Settings` from env vars; holds AU localization defaults (default currency AUD, tax year starts July 1, CGT discount rate — 0.50 individuals / 0.3333 SMSF).
 - **Portfolio engine** (`services/portfolio_engine.py`) and **analytics engine** (`services/analytics_engine.py`) are pure computation with injected data — FIFO cost basis, per-transaction FX, realized/unrealized P&L, drawdowns, benchmark comparison.
-- **Currency**: everything converts through an AUD pivot. `services/fx_service.py` uses Yahoo as primary FX source with RBA f11.1 XLS as fallback. ASX symbols resolve via `.AX` suffix in `market_data_service.py`, which has a provider fallback chain (Yahoo → CoinGecko → Polygon).
+- **Currency**: everything converts through an AUD pivot. The `FXService` class in `services/fx_service.py` handles all currency conversion. It uses Yahoo Finance as primary FX source with RBA f11.1 XLS/fallback API as secondary. Key details:
+  - **RBA Series Dictionary** (`RBA_SERIES_ID`): maps major currencies (USD, EUR, GBP, JPY, CNY, CAD, HKD, SGD, NZD) to Reserve Bank of Australia series IDs for fallback FX rate fetching
+  - **Stablecoin Normalization**: USDT, USDC, DAI, BUSD are automatically mapped to USD for FX conversion
+  - **Default Currency**: AUD (set in `config.py`) as the reporting base for Australian tax compliance
+  - **Per-Entity Currency Fields**: Asset, Transaction, Account, and User models each store their own currency (3-letter ISO codes)
+  - **AUD Pivot**: All conversions pass through AUD; `fx_rate_to_aud` is mandatory on transactions for ATO CGT calculations
+  - **Provider Chain**: ASX symbols resolve via `.AX` suffix in `market_data_service.py` with fallback chain (Yahoo → CoinGecko → Polygon)
 - **Tax**: `services/ato_tax_engine.py` implements AU financial-year rules (CGT discount, franking credits); `TaxYearSettings` stores per-FY reconciliation adjustments between broker feeds and annual tax statements.
 - **AI**: `services/agents/` — a multi-agent pipeline (technical / fundamental / news specialists + synthesis). `_base.py` provides the provider abstraction (claude / openai / gemini / ollama / lmstudio), pydantic output models, and cheap-LLM auto-selection.
 - **Workers**: Celery (`workers/celery_app.py`) with tasks in `workers/tasks/` across queues `high_priority` / `default` / `low_priority`; Redis is the broker.
