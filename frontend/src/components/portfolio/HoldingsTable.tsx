@@ -129,7 +129,11 @@ function ExpandedDetail({ symbol, origCcy, colSpan }: { symbol: string; origCcy:
   ]);
   const trades = (txns ?? []).filter((t) => TXN_TYPES.has(t.transaction_type));
 
-  const ccyLabel = origCcy === "USD" ? "US$" : origCcy === "AUD" ? "A$" : `${origCcy} `;
+  const ccyLabel = 
+    origCcy === "USD" ? "US$" : 
+    origCcy === "AUD" ? "A$" :
+    origCcy === "EUR" ? "€" :
+    `${origCcy} `;
 
   if (trades.length === 0) {
     return (

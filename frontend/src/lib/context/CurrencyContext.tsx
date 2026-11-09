@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 
-type DisplayCurrency = "AUD" | "USD";
+type DisplayCurrency = "AUD" | "USD" | "EUR";
 
 interface CurrencyContextType {
   displayCurrency: DisplayCurrency;

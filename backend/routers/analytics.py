@@ -107,7 +107,7 @@ async def get_analytics(
     benchmark: str = Query("SPY", description="Benchmark ticker"),
     start_date: Optional[str] = Query(None, description="Custom start (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Custom end (YYYY-MM-DD)"),
-    currency: Optional[str] = Query(None, description="Display currency (AUD|USD)"),
+    currency: Optional[str] = Query(None, description="Display currency (AUD|USD|EUR)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -235,7 +235,7 @@ async def get_portfolio_value_history(
     start_date: Optional[str] = Query(None, description="Custom start (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Custom end (YYYY-MM-DD)"),
     benchmarks: str = Query("SPY,BTC", description="Comma-separated benchmark tickers"),
-    currency: Optional[str] = Query(None, description="Display currency (AUD|USD)"),
+    currency: Optional[str] = Query(None, description="Display currency (AUD|USD|EUR)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

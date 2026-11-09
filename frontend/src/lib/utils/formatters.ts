@@ -17,7 +17,12 @@ export function formatCurrency(
   compact = false,
   currency = "AUD",
 ): string {
-  const locale = currency === "AUD" ? "en-AU" : "en-US";
+  const localeMap: Record<string, string> = {
+    "AUD": "en-AU",
+    "USD": "en-US",
+    "EUR": "it-IT",
+  };
+  const locale = localeMap[currency] || "en-AU";
   if (compact && Math.abs(value) >= 1_000_000) {
     return new Intl.NumberFormat(locale, {
       style: "currency",

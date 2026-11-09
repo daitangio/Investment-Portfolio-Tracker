@@ -12,7 +12,8 @@ import clsx from "clsx";
 type RefreshPhase = "idle" | "syncing" | "fetching" | "done" | "error";
 
 export function TopBar() {
-  const { displayCurrency, toggleCurrency } = useCurrency();
+  const { displayCurrency, setCurrency } = useCurrency();
+  const currencies: ("AUD" | "USD" | "EUR")[] = ["AUD", "USD", "EUR"];
   const { data: portfolio } = usePortfolioSummary(undefined, displayCurrency);
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<RefreshPhase>("idle");
@@ -171,33 +172,18 @@ export function TopBar() {
           </div>
         )}
 
-        {/* Currency Toggle */}
-        <button
-          onClick={toggleCurrency}
-          className="flex items-center h-9 rounded-lg border border-gray-700 overflow-hidden text-xs font-medium transition-colors"
-          title={`Display in ${displayCurrency === "AUD" ? "USD" : "AUD"}`}
+        {/* Currency Dropdown */}
+        <select
+          value={displayCurrency}
+          onChange={(e) => setCurrency(e.target.value as "AUD" | "USD" | "EUR")}
+          className="h-9 rounded-lg border border-gray-700 bg-gray-800 text-xs font-medium text-gray-100 transition-colors focus:outline-none focus:border-blue-500"
         >
-          <span
-            className={clsx(
-              "px-2.5 py-2 transition-colors",
-              displayCurrency === "AUD"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-500 hover:text-gray-300"
-            )}
-          >
-            AUD
-          </span>
-          <span
-            className={clsx(
-              "px-2.5 py-2 transition-colors",
-              displayCurrency === "USD"
-                ? "bg-green-600 text-white"
-                : "bg-gray-800 text-gray-500 hover:text-gray-300"
-            )}
-          >
-            USD
-          </span>
-        </button>
+          {currencies.map((ccy) => (
+            <option key={ccy} value={ccy} className="bg-gray-800 text-gray-100">
+              {ccy}
+            </option>
+          ))}
+        </select>
 
         <button
           onClick={handleRefresh}

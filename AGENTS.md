@@ -10,7 +10,9 @@
 - The overall project aims to be very compact (*less is more* mantra)
 - Always ignore the var/ folder: nothing interesting is there.
 
-- At the end of LOG.md, create a work in progress log, where you note what you already did, what is missing. Always update LOG.md at the end, following the template. Always include the name of the model used, version included.
+- At the end of LOG.md, create a work in progress log, where you note what you already did, what is missing. Always include the name of the model used, version included.
+
+- Ensure openspec version 1.16.1 is installed (run ```openspec --version``` to verify)
 
 ## Project
 

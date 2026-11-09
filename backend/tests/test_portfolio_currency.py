@@ -58,6 +58,14 @@ class _FakeFXService:
             return Decimal("1.7")
         if from_c == "AUD" and to_c == "USD":
             return Decimal("0.5882352941")
+        if from_c == "EUR" and to_c == "AUD":
+            return Decimal("1.60")
+        if from_c == "AUD" and to_c == "EUR":
+            return Decimal("0.625")  # 1/1.60
+        if from_c == "EUR" and to_c == "USD":
+            return Decimal("1.1")
+        if from_c == "USD" and to_c == "EUR":
+            return Decimal("0.9090909091")  # 1/1.1
         raise AssertionError(f"Unexpected FX lookup {from_currency}/{to_currency}")
 
     async def close(self):
@@ -181,6 +189,63 @@ class PortfolioCurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aud.dividend_income, Decimal("150.0000000000"))
         self.assertEqual(usd.dividend_income, Decimal("88.2352941176"))
         self.assertEqual(usd.holdings, [])
+
+    async def test_eur_display_currency_conversion(self):
+        """Test that EUR display currency conversion works correctly."""
+        asset = Asset(
+            id="asset-eur",
+            symbol="ALV.DE",
+            name="Allianz",
+            asset_class="EQUITY",
+            currency="EUR",
+        )
+        engine = PortfolioEngine(_FakeDb([asset]), _FakeMarketData({"ALV.DE": 100.0}))
+        state = PortfolioState(as_of=datetime(2026, 1, 2, tzinfo=timezone.utc))
+
+        buy = Transaction(
+            id="buy-eur",
+            account_id="acct",
+            user_id="user",
+            asset_id=asset.id,
+            transaction_type="BUY",
+            quantity=Decimal("10"),
+            price_per_unit=Decimal("80"),
+            fees=Decimal("0"),
+            currency="EUR",
+            fx_rate_to_aud=Decimal("1.6"),
+            transacted_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+
+        state = engine._apply_buy(state, buy, asset)
+
+        with patch("services.portfolio_engine.FXService", _FakeFXService):
+            eur = await engine._hydrate_with_prices(state, "user", "EUR")
+            aud = await engine._hydrate_with_prices(state, "user", "AUD")
+            usd = await engine._hydrate_with_prices(state, "user", "USD")
+
+        # EUR display: values should be in EUR
+        self.assertEqual(eur.holdings[0].original_currency, "EUR")
+        self.assertEqual(eur.holdings[0].last_price, Decimal("100.000000"))
+        self.assertEqual(eur.holdings[0].total_cost_basis, Decimal("800.000000"))
+        self.assertEqual(eur.holdings[0].market_value, Decimal("1000.000000"))
+        self.assertEqual(eur.total_market_value, Decimal("1000.000000"))
+        self.assertEqual(eur.total_cost_basis, Decimal("800.000000"))
+
+        # AUD display: EUR values converted to AUD
+        # 100 EUR * 1.6 = 160 AUD (price)
+        # 800 EUR * 1.6 = 1280 AUD (cost basis)
+        # 1000 EUR * 1.6 = 1600 AUD (market value)
+        self.assertEqual(aud.holdings[0].last_price, Decimal("160.000000"))
+        self.assertEqual(aud.holdings[0].total_cost_basis, Decimal("1280.000000"))
+        self.assertEqual(aud.holdings[0].market_value, Decimal("1600.000000"))
+        self.assertEqual(aud.total_market_value, Decimal("1600.000000"))
+        self.assertEqual(aud.total_cost_basis, Decimal("1280.000000"))
+
+        # USD display: EUR values converted to USD via AUD pivot
+        # EUR->AUD: 1.6, AUD->USD: 0.5882352941
+        # EUR->USD: 1.6 * 0.5882352941 = 0.9411764706
+        # 100 EUR * 0.9411764706 = 94.11764706 USD (price)
+        self.assertAlmostEqual(float(usd.holdings[0].last_price), 94.11764706, places=6)
 
 
 if __name__ == "__main__":

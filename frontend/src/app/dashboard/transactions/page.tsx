@@ -340,7 +340,13 @@ const BROKERS: BrokerInfo[] = [
 
 function formatInCurrency(value: number | null | undefined, currency: string = "AUD"): string {
   if (value == null) return "—";
-  return new Intl.NumberFormat(currency === "AUD" ? "en-AU" : "en-US", {
+  const localeMap: Record<string, string> = {
+    "AUD": "en-AU",
+    "USD": "en-US",
+    "EUR": "it-IT",
+  };
+  const locale = localeMap[currency] || "en-AU";
+  return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: currency,
     minimumFractionDigits: 2,
@@ -1309,6 +1315,7 @@ function AccountCard({
                         "text-xs px-1.5 py-0.5 rounded font-medium",
                         ccy === "AUD" ? "text-blue-400 bg-blue-400/10" :
                         ccy === "USD" ? "text-green-400 bg-green-400/10" :
+                        ccy === "EUR" ? "text-purple-400 bg-purple-400/10" :
                         "text-gray-400 bg-gray-400/10"
                       )}>
                         {ccy}

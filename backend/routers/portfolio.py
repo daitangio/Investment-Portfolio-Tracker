@@ -624,7 +624,7 @@ async def get_portfolio_summary(
     period: Optional[str] = Query(None, description="Optional performance period: 1M|3M|6M|YTD|1Y|3Y|ALL"),
     start_date: Optional[str] = Query(None, description="Custom period start (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Custom period end (YYYY-MM-DD)"),
-    currency: Optional[str] = Query(None, description="Display currency (AUD|USD)"),
+    currency: Optional[str] = Query(None, description="Display currency (AUD|USD|EUR)"),
     include_holding_period_metrics: bool = Query(
         False,
         description="Include slower holding-level historical return metrics",
@@ -699,7 +699,7 @@ async def get_account_holdings(
 
 @router.get("/net-worth")
 async def get_net_worth(
-    currency: Optional[str] = Query(None, description="Display currency (AUD|USD)"),
+    currency: Optional[str] = Query(None, description="Display currency (AUD|USD|EUR)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

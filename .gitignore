@@ -74,3 +74,6 @@ Thumbs.db
 *.pem
 *.key
 credentials.json
+
+vibe-*txt
+requirements*
