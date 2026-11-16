@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import SecretStr
 from functools import lru_cache
 
@@ -108,9 +108,11 @@ class Settings(BaseSettings):
     binance_api_key: SecretStr = SecretStr("")
     binance_api_secret: SecretStr = SecretStr("")
 
-    class Config:
-        env_file = (".env", "../.env")
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 @lru_cache

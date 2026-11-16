@@ -8,7 +8,7 @@
 - No sycophantic openers or closing fluff.
 - Keep solutions simple and direct.
 - The overall project aims to be very compact (*less is more* mantra)
-- Always ignore the var/ folder: nothing interesting is there.
+- Always ignore the taic/ folder: nothing interesting is there.
 
 - At the end of LOG.md, create a work in progress log, where you note what you already did, what is missing. Always include the name of the model used, version included.
 

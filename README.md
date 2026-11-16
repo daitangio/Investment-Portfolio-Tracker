@@ -104,14 +104,14 @@ You can use local models without a hosted API key.
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15, TypeScript, Tailwind CSS, TanStack Query |
-| Backend | Python 3.12, FastAPI, SQLAlchemy async |
-| Data | PostgreSQL, Redis |
-| Market Data | Yahoo Finance, CoinGecko, provider fallbacks |
-| AI | Gemini, Claude, OpenAI, Ollama, LM Studio |
-| DevOps | Docker Compose |
+| Layer       | Technology                                           |
+| ----------- | ---------------------------------------------------- |
+| Frontend    | Next.js 15, TypeScript, Tailwind CSS, TanStack Query |
+| Backend     | Python 3.14, FastAPI, SQLAlchemy async               |
+| Data        | PostgreSQL, Redis                                    |
+| Market Data | Yahoo Finance, CoinGecko, provider fallbacks         |
+| AI          | Gemini, Claude, OpenAI, Ollama, LM Studio            |
+| DevOps      | Docker Compose                                       |
 
 ## Support
 
