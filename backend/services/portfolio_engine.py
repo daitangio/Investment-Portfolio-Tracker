@@ -17,7 +17,7 @@ from typing import Optional
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import Account, Asset, Holding, TaxLot, Transaction, User
+from shared.models import Account, Asset, Holding, Price, TaxLot, Transaction, User
 from shared.cache import cache_get, cache_set
 from services.market_data_service import MarketDataService
 from services.fx_service import FXService
@@ -586,7 +586,26 @@ class PortfolioEngine:
                 assets[aid].symbol: self._asset_price_currency(assets[aid])
                 for aid in asset_ids if aid in assets
             }
-            prices = await self.market_data.get_batch_prices(symbols, symbol_currencies)
+            symbol_meta = {
+                assets[aid].symbol: {"asset_class": assets[aid].asset_class, "ticker": assets[aid].polygon_ticker}
+                for aid in asset_ids if aid in assets
+            }
+            prices = await self.market_data.get_batch_prices(symbols, symbol_currencies, symbol_meta)
+
+            # Fallback for assets with no live price (e.g. bonds when Borsa
+            # Italiana is unreachable): use the newest stored Price row.
+            missing = [aid for aid in asset_ids if aid in assets and assets[aid].symbol not in prices]
+            if missing:
+                pres = await self.db.execute(
+                    select(Price)
+                    .where(Price.asset_id.in_(missing))
+                    .order_by(Price.asset_id, Price.price_date.desc())
+                )
+                latest: dict[str, Price] = {}
+                for p in pres.scalars():
+                    latest.setdefault(p.asset_id, p)
+                for aid, p in latest.items():
+                    prices[assets[aid].symbol] = float(p.price)
 
         # Current FX rates for market prices → AUD reporting base.
         spot_currencies = {

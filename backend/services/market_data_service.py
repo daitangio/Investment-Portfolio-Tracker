@@ -7,6 +7,7 @@ Redis caching and automatic fallback chain.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -28,6 +29,7 @@ class MarketDataService:
     Price priority chain:
       Equities: Polygon → Yahoo Finance → Alpha Vantage
       Crypto:   CoinGecko → CoinMarketCap
+      Bonds (ISIN): Borsa Italiana MOT → Yahoo → stored Price row
     """
 
     CRYPTO_SYMBOLS = {
@@ -43,11 +45,39 @@ class MarketDataService:
         "W": "1wk",
     }
 
+    # ISIN pattern: 2-letter country prefix + 9 alphanumerics + check digit
+    _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
+
+    # Borsa Italiana MOT path segments to try for Italian government bonds
+    _BOND_SEGMENTS = ("btp", "bot", "cct", "ctz", "btp-italia", "btp-valore", "btp-green", "btp-futura")
+    _BORSA_BASE = "https://www.borsaitaliana.it"
+    _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+
     def __init__(self):
         self._http = httpx.AsyncClient(timeout=15.0, limits=httpx.Limits(max_connections=100))
         self._asx_symbols: set[str] = set()  # Track symbols that need .AX suffix
+        self._bond_segment_cache: dict[str, str] = {}  # ISIN -> working MOT segment
 
-    async def get_price(self, symbol: str, currency: str = "USD") -> Optional[float]:
+    @classmethod
+    def _is_isin(cls, symbol: str) -> bool:
+        return bool(symbol) and bool(cls._ISIN_RE.match(symbol))
+
+    @classmethod
+    def borsa_type_segments(cls, name: Optional[str]) -> list[str]:
+        """Candidate MOT path segments derived from an instrument name."""
+        if not name:
+            return list(cls._BOND_SEGMENTS)
+        desc = name.upper()
+        for prefix, segment in (
+            ("BTP ITALIA", "btp-italia"), ("BTP VALORE", "btp-valore"),
+            ("BTP GREEN", "btp-green"), ("BTP FUTURA", "btp-futura"),
+            ("BTP", "btp"), ("BOT", "bot"), ("CCT", "cct"), ("CTZ", "ctz"),
+        ):
+            if desc.startswith(prefix):
+                return [segment]
+        return list(cls._BOND_SEGMENTS)
+
+    async def get_price(self, symbol: str, currency: str = "USD", asset_class: Optional[str] = None) -> Optional[float]:
         """Get current price for a single symbol."""
         # For AUD assets, use .AX cache key to differentiate from US version
         cache_suffix = ":AX" if currency.upper() == "AUD" else ""
@@ -59,6 +89,11 @@ class MarketDataService:
         price = None
         if self._is_crypto(symbol):
             price = await self._get_crypto_price(symbol)
+        elif asset_class == "BOND" or (asset_class is None and self._is_isin(symbol)):
+            # Italian government bonds etc. are priced by ISIN on Borsa Italiana
+            price = await self._borsa_italiana_spot(symbol)
+            if price is None:
+                price = await self._get_equity_price(symbol, currency)
         else:
             price = await self._get_equity_price(symbol, currency)
 
@@ -68,16 +103,21 @@ class MarketDataService:
         return price
 
     async def get_batch_prices(
-        self, symbols: list[str], symbol_currencies: Optional[dict[str, str]] = None
+        self,
+        symbols: list[str],
+        symbol_currencies: Optional[dict[str, str]] = None,
+        symbol_meta: Optional[dict[str, dict]] = None,
     ) -> dict[str, float]:
         """
         Get current prices for multiple symbols efficiently.
         symbol_currencies: optional dict of {symbol: currency} to resolve exchange.
+        symbol_meta: optional dict of {symbol: {"asset_class":..., "ticker":...}}.
         """
         if not symbols:
             return {}
 
         ccys = symbol_currencies or {}
+        meta = symbol_meta or {}
 
         # Check cache first
         result: dict[str, float] = {}
@@ -106,7 +146,7 @@ class MarketDataService:
                 await cache_set(f"market:price:{sym}:spot", price, ttl=60)
 
         if equity_syms:
-            equity_prices = await self._get_batch_equity_prices(equity_syms, ccys)
+            equity_prices = await self._get_batch_equity_prices(equity_syms, ccys, meta)
             result.update(equity_prices)
             for sym, price in equity_prices.items():
                 ccy = ccys.get(sym, "USD").upper()
@@ -203,31 +243,49 @@ class MarketDataService:
     # ─── Equity Providers ────────────────────────────────────────────────
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
-    async def _get_equity_price(self, symbol: str, currency: str = "USD") -> Optional[float]:
+    async def _get_equity_price(
+        self, symbol: str, currency: str = "USD", asset_class: Optional[str] = None, ticker: Optional[str] = None
+    ) -> Optional[float]:
         """Polygon → Yahoo Finance fallback. Currency hint for exchange resolution."""
+        # Bonds and other ISIN-keyed instruments: Borsa Italiana first
+        if asset_class == "BOND" or (asset_class is None and self._is_isin(symbol)):
+            price = await self._borsa_italiana_spot(symbol)
+            if price is not None:
+                return price
+
+        lookup = ticker or symbol  # resolved alias (e.g. Yahoo ticker for an ETF ISIN)
         # Skip Polygon for AUD assets (it doesn't support ASX)
         if currency.upper() != "AUD":
             try:
-                return await self._polygon_spot(symbol)
+                p = await self._polygon_spot(lookup)
+                if p is not None:
+                    return p
             except Exception as e:
-                logger.warning(f"Polygon failed for {symbol}: {e}")
+                logger.warning(f"Polygon failed for {lookup}: {e}")
 
         try:
-            return await self._yahoo_spot(symbol, currency)
+            return await self._yahoo_spot(lookup, currency)
         except Exception as e:
-            logger.warning(f"Yahoo failed for {symbol}: {e}")
+            logger.warning(f"Yahoo failed for {lookup}: {e}")
 
         return None
 
     async def _get_batch_equity_prices(
-        self, symbols: list[str], symbol_currencies: Optional[dict[str, str]] = None
+        self,
+        symbols: list[str],
+        symbol_currencies: Optional[dict[str, str]] = None,
+        symbol_meta: Optional[dict[str, dict]] = None,
     ) -> dict[str, float]:
         """Fetch multiple equity prices."""
         ccys = symbol_currencies or {}
+        meta = symbol_meta or {}
         results = {}
         for sym in symbols:
             ccy = ccys.get(sym, "USD")
-            price = await self._get_equity_price(sym, ccy)
+            m = meta.get(sym, {})
+            price = await self._get_equity_price(
+                sym, ccy, asset_class=m.get("asset_class"), ticker=m.get("ticker")
+            )
             if price is not None:
                 results[sym] = price
         return results
@@ -269,6 +327,115 @@ class MarketDataService:
             except Exception as e:
                 logger.debug(f"Yahoo spot {symbol}{suffix}: {e}")
                 continue
+        return None
+
+    # ─── Borsa Italiana MOT (Italian government bonds, priced by ISIN) ────
+
+    @staticmethod
+    def _parse_it_float(text: str) -> Optional[float]:
+        """Borsa Italiana en pages print plain dot-decimals like 99.54607."""
+        try:
+            return float(text.replace(",", ""))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_borsa_last_price(cls, html: str) -> Optional[float]:
+        """Big summary price: <div class="summary-value"> ... -formatPrice"> <strong>99.529</strong>"""
+        m = re.search(r'summary-value.*?-formatPrice">\s*<strong>\s*([\d]+(?:[.,][\d]+)?)', html, re.S)
+        return cls._parse_it_float(m.group(1)) if m else None
+
+    @classmethod
+    def _parse_borsa_official_close(cls, html: str) -> Optional[tuple[float, Optional[datetime]]]:
+        """Market data table: <strong>Official Close</strong> ... <span class="t-text -right">99.54607</span>"""
+        m = re.search(r'Official Close</strong>.*?t-text -right">\s*([\d]+(?:[.,][\d]+)?)', html, re.S)
+        if not m:
+            return None
+        price = cls._parse_it_float(m.group(1))
+        if price is None:
+            return None
+        day = None
+        dm = re.search(r'Official Close Date</strong>.*?t-text -right">\s*(\d{2}/\d{2}/\d{2,4})', html, re.S)
+        if dm:
+            try:
+                day = datetime.strptime(dm.group(1), "%d/%m/%y" if len(dm.group(1)) == 8 else "%d/%m/%Y").replace(tzinfo=timezone.utc)
+            except ValueError:
+                day = None
+        return price, day
+
+    async def _borsa_italiana_page(self, isin: str, segment: str) -> Optional[str]:
+        url = f"{self._BORSA_BASE}/borsa/obbligazioni/mot/{segment}/scheda/{isin}-MOTX.html?lang=en"
+        try:
+            resp = await self._http.get(url, headers=self._UA)
+        except Exception as e:
+            logger.debug(f"Borsa Italiana {isin} ({segment}): {e}")
+            return None
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            logger.debug(f"Borsa Italiana {isin} ({segment}): HTTP {resp.status_code}")
+            return None
+        return resp.text
+
+    @staticmethod
+    def _borsa_price_per_eur(quoted_pct: float) -> float:
+        """MOT quotes bond prices as % of nominal (99.529); our Price rows and
+        cost basis use EUR per EUR of nominal, so divide by 100. This keeps
+        quantity(nominal) × price = market value in the portfolio engine."""
+        return quoted_pct / 100.0
+
+    async def _borsa_italiana_spot(self, isin: str, segments: Optional[list[str]] = None) -> Optional[float]:
+        """Last-trade price (fallback: official close) for a bond ISIN from Borsa
+        Italiana, normalized to EUR per EUR of nominal."""
+        isin = isin.upper()
+        if isin in self._bond_segment_cache:
+            candidates = [self._bond_segment_cache[isin]]
+        else:
+            candidates = segments or list(self._BOND_SEGMENTS)
+        for segment in candidates:
+            html = await self._borsa_italiana_page(isin, segment)
+            if html is None:
+                continue
+            price = self._parse_borsa_last_price(html)
+            if price is None:
+                close = self._parse_borsa_official_close(html)
+                price = close[0] if close else None
+            if price:
+                self._bond_segment_cache[isin] = segment
+                return self._borsa_price_per_eur(price)
+        return None
+
+    async def borsa_italiana_official_close(
+        self, isin: str, segments: Optional[list[str]] = None
+    ) -> Optional[tuple[float, datetime]]:
+        """Official close price (EUR per EUR of nominal) + date for a bond ISIN
+        (used by the daily refresh task)."""
+        isin = isin.upper()
+        candidates = [self._bond_segment_cache[isin]] if isin in self._bond_segment_cache else (segments or list(self._BOND_SEGMENTS))
+        for segment in candidates:
+            html = await self._borsa_italiana_page(isin, segment)
+            if html is None:
+                continue
+            close = self._parse_borsa_official_close(html)
+            if close and close[0]:
+                self._bond_segment_cache[isin] = segment
+                return self._borsa_price_per_eur(close[0]), close[1] or datetime.now(timezone.utc)
+        return None
+
+    async def resolve_isin_to_ticker(self, isin: str) -> Optional[str]:
+        """Resolve an ISIN (e.g. an ETF) to a Yahoo Finance ticker via symbol search."""
+        try:
+            resp = await self._http.get(
+                "https://query1.finance.yahoo.com/v1/finance/search",
+                headers=self._UA,
+                params={"q": isin, "quotesCount": 8, "newsCount": 0},
+            )
+            resp.raise_for_status()
+            for quote in resp.json().get("quotes", []):
+                if quote.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND") and quote.get("symbol"):
+                    return quote["symbol"]
+        except Exception as e:
+            logger.debug(f"Yahoo ISIN search failed for {isin}: {e}")
         return None
 
     async def _get_equity_history(self, symbol: str, start: datetime, end: datetime, currency: str = "USD") -> list[dict]:

@@ -1,6 +1,12 @@
 # How to develop with mistral vibe on MacOs
 
-Install uv with brew
+What to install (i.e. with brew)
+- uv 0.13.7
+- rtk 1.2.0
+- openspec 1.16.1 (use npm `install -g @fission-ai/openspec@1.16.1`)
+- 
+
+
 Execute
 
 ```sh
@@ -12,3 +18,4 @@ make help
 ```
 
 Same setup apply on Linux
+

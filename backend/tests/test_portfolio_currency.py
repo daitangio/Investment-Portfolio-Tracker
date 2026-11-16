@@ -39,7 +39,7 @@ class _FakeMarketData:
     def __init__(self, prices=None):
         self._prices = prices or {"BTC": 30000.0}
 
-    async def get_batch_prices(self, _symbols, _symbol_currencies=None):
+    async def get_batch_prices(self, _symbols, _symbol_currencies=None, _symbol_meta=None):
         return self._prices
 
 

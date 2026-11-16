@@ -5,7 +5,7 @@ import type { Route } from "next";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import {
-  LayoutDashboard, ArrowLeftRight,
+  LayoutDashboard, ArrowLeftRight, Upload,
   Bot, FileText, TrendingUp, LogOut,
   Globe, Star, History,
 } from "lucide-react";
@@ -16,6 +16,7 @@ type NavItem = { href: Route; label: string; icon: typeof LayoutDashboard; badge
 const INVEST_NAV: NavItem[] = [
   { href: "/dashboard",              label: "Dashboard",   icon: LayoutDashboard, badge: null },
   { href: "/dashboard/transactions", label: "Investments", icon: ArrowLeftRight,  badge: null },
+  { href: "/dashboard/import",       label: "Import",      icon: Upload,          badge: null },
   { href: "/dashboard/advisor",      label: "AI Advisor",  icon: Bot,             badge: "AI" },
   { href: "/dashboard/tax",          label: "Tax Center",  icon: FileText,        badge: null },
 ];

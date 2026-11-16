@@ -45,5 +45,10 @@ celery_app.conf.update(
             "schedule": 86400.0,  # Daily
             "options": {"queue": "low_priority"},
         },
+        "refresh-bond-prices": {
+            "task": "workers.tasks.market_data_tasks.refresh_bond_prices",
+            "schedule": 86400.0,  # Daily
+            "options": {"queue": "low_priority"},
+        },
     },
 )
