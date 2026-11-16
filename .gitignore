@@ -77,4 +77,11 @@ credentials.json
 
 vibe-*txt
 requirements*
-docs/intesa-sample/patrimonio*.xlsx
+docs/intesa-sample/sample-transactions.zip
+
+docs/intesa-sample/sample-transactions/TFAMB00001_etf.pdf
+docs/intesa-sample/sample-transactions/TFAMB00001_btp.pdf 
+docs/intesa-sample/sample-transactions/TFAMB00001_double.pdf
+
+# Kept secret for security reason: redact pdfs used for transaction tests
+sh/pdfAnonymizer.py

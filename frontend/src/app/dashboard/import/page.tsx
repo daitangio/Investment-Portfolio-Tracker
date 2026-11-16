@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import IspImportPanel from "./IspImportPanel";
+import IspTradePanel from "./IspTradePanel";
 
 const INSTITUTIONS = [
   { id: "", label: "Auto-detect", flag: "🔍" },
@@ -208,6 +209,9 @@ export default function ImportPage() {
 
       {/* Intesa Sanpaolo holdings snapshot */}
       <IspImportPanel />
+
+      {/* Intesa Sanpaolo trade confirmations (PDF) */}
+      <IspTradePanel />
 
       {/* Preview */}
       {preview && !confirmed && (
