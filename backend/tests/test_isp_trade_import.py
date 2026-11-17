@@ -274,42 +274,99 @@ class _EmptyDb:
 
 
 class RouterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_upload_rejects_non_intesa_pdf_with_422(self):
+    """Tests for the PDF dispatch inside POST /api/v1/transactions/import."""
+
+    async def test_import_rejects_non_intesa_pdf_with_422(self):
+        from unittest.mock import patch, AsyncMock
         from fastapi import HTTPException
-        from routers import isp_import
-        with self.assertRaises(HTTPException) as ctx:
-            await isp_import.upload_trades(
-                file=_FakeUpload(b"not a pdf", "trades.pdf"),
-                account_id=None, current_user=None, db=_EmptyDb(),
-            )
+        from routers import transactions
+        from shared.models import Account
+        account = Account(id="acct-1", user_id="u1", name="ISP", account_type="BROKERAGE")
+        fake_user = type("U", (), {"id": "u1"})()
+        with patch("routers.transactions.cache_invalidate_user", AsyncMock()):
+            with self.assertRaises(HTTPException) as ctx:
+                await transactions.import_transactions(
+                    file=_FakeUpload(b"not a pdf", "trades.pdf"),
+                    account_id="acct-1", broker_hint="intesa_sanpaolo",
+                    current_user=fake_user, db=_FakeDb([[account]]),
+                )
         self.assertEqual(ctx.exception.status_code, 422)
 
-    async def test_upload_returns_preview_for_sample(self):
+    async def test_import_rejects_pdf_without_intesa_hint(self):
+        from unittest.mock import patch, AsyncMock
+        from fastapi import HTTPException
+        from routers import transactions
+        from shared.models import Account
+        account = Account(id="acct-1", user_id="u1", name="ISP", account_type="BROKERAGE")
+        fake_user = type("U", (), {"id": "u1"})()
+        with patch("routers.transactions.cache_invalidate_user", AsyncMock()):
+            with self.assertRaises(HTTPException) as ctx:
+                await transactions.import_transactions(
+                    file=_FakeUpload(DOUBLE_PDF.read_bytes(), "double.pdf"),
+                    account_id="acct-1", broker_hint=None,
+                    current_user=fake_user, db=_FakeDb([[account]]),
+                )
+        self.assertEqual(ctx.exception.status_code, 422)
+
+    async def test_import_pdf_imports_all_trades(self):
+        from unittest.mock import patch, AsyncMock
         import services.isp_trade_import as mod
-        from routers import isp_import
+        from routers import transactions
+        from shared.models import Account
+
         orig = mod.FXService
         mod.FXService = lambda: _FakeFX()
+        account = Account(id="acct-1", user_id="u1", name="ISP", account_type="BROKERAGE")
+        # execute() calls: account validation, existing hashes, confirm's account lookup, confirm's existing hashes, per-asset lookups
+        db = _FakeDb([[account], [], [account], [], [], []])
+        fake_user = type("U", (), {"id": "u1"})()
         try:
-            resp = await isp_import.upload_trades(
-                file=_FakeUpload(DOUBLE_PDF.read_bytes(), "double.pdf"),
-                account_id="acct-1", current_user=None, db=_EmptyDb(),
-            )
+            with patch("routers.transactions.cache_invalidate_user", AsyncMock()):
+                resp = await transactions.import_transactions(
+                    file=_FakeUpload(DOUBLE_PDF.read_bytes(), "double.pdf"),
+                    account_id="acct-1", broker_hint="intesa_sanpaolo",
+                    current_user=fake_user, db=db,
+                )
         finally:
             mod.FXService = orig
-        self.assertEqual(len(resp.trades), 2)
-        self.assertEqual(resp.trades[0].transaction_type, "BUY")
-        self.assertEqual(resp.trades[1].transaction_type, "SELL")
+        self.assertEqual(resp.broker_detected, "Intesa Sanpaolo")
+        self.assertEqual(resp.total_rows, 2)
+        self.assertEqual(resp.imported, 2)
+        self.assertEqual(resp.duplicates, 0)
 
-    async def test_confirm_unknown_account_404(self):
-        from fastapi import HTTPException
-        from routers import isp_import
-        req = isp_import.IspTradeConfirmRequest(
-            account_id="missing", import_hashes=[], trades=[],
-        )
+    async def test_import_pdf_dedup_on_second_import(self):
+        from unittest.mock import patch, AsyncMock
+        import services.isp_trade_import as mod
+        from routers import transactions
+        from shared.models import Account, Transaction
+
+        orig = mod.FXService
+        mod.FXService = lambda: _FakeFX()
+        account = Account(id="acct-1", user_id="u1", name="ISP", account_type="BROKERAGE")
         fake_user = type("U", (), {"id": "u1"})()
-        with self.assertRaises(HTTPException) as ctx:
-            await isp_import.confirm_trades_endpoint(body=req, current_user=fake_user, db=_EmptyDb())
-        self.assertEqual(ctx.exception.status_code, 404)
+        try:
+            with patch("routers.transactions.cache_invalidate_user", AsyncMock()):
+                # First import: account, existing hashes (empty), confirm account, confirm existing (empty), asset lookup
+                db1 = _FakeDb([[account], [], [account], [], []])
+                resp1 = await transactions.import_transactions(
+                    file=_FakeUpload(ETF_PDF.read_bytes(), "etf.pdf"),
+                    account_id="acct-1", broker_hint="intesa_sanpaolo",
+                    current_user=fake_user, db=db1,
+                )
+                self.assertEqual(resp1.imported, 1)
+                txns = [o for o in db1.added if isinstance(o, Transaction)]
+                hashes = {t.import_hash for t in txns}
+                # Second import: existing hashes now contain the first import's hash
+                db2 = _FakeDb([[account], list(hashes), [account], list(hashes)])
+                resp2 = await transactions.import_transactions(
+                    file=_FakeUpload(ETF_PDF.read_bytes(), "etf.pdf"),
+                    account_id="acct-1", broker_hint="intesa_sanpaolo",
+                    current_user=fake_user, db=db2,
+                )
+        finally:
+            mod.FXService = orig
+        self.assertEqual(resp2.imported, 0)
+        self.assertEqual(resp2.duplicates, 1)
 
 
 if __name__ == "__main__":

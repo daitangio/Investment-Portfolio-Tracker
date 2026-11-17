@@ -306,11 +306,15 @@ async def import_transactions(
 
     filename = file.filename or "upload.csv"
     ext = filename.lower().split(".")[-1]
-    if ext not in ("csv", "txt", "xlsx", "xls", "json"):
+    if ext not in ("csv", "txt", "xlsx", "xls", "json", "pdf"):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '.{ext}'. Please upload a CSV, Excel, or JSON file."
+            detail=f"Unsupported file type '.{ext}'. Please upload a CSV, Excel, JSON, or PDF file."
         )
+
+    # PDF trade confirmations (Intesa Sanpaolo) dispatch to the ISP trade importer
+    if ext == "pdf":
+        return await _import_pdf_trades(content, account_id, current_user.id, broker_hint, db)
 
     importer = TransactionImporter(db)
     try:
@@ -343,4 +347,59 @@ async def import_transactions(
         error_details=result.error_details[:20],
         transaction_ids=result.transactions,
         broker_detected=result.broker_detected,
+    )
+
+
+async def _import_pdf_trades(
+    content: bytes,
+    account_id: str,
+    user_id: str,
+    broker_hint: Optional[str],
+    db: AsyncSession,
+) -> ImportResultResponse:
+    """Dispatch an Intesa Sanpaolo trade-confirmation PDF to the ISP trade importer."""
+    from services.isp_trade_import import SOURCE as TRADE_SOURCE, confirm_trades, preview_trades
+
+    hint = (broker_hint or "").lower()
+    if "intesa" not in hint:
+        raise HTTPException(
+            status_code=422,
+            detail="PDF import is only supported for Intesa Sanpaolo (broker_hint='intesa_sanpaolo').",
+        )
+
+    # Check for existing hashes to report duplicates accurately
+    existing_result = await db.execute(
+        select(Transaction.import_hash).where(
+            Transaction.account_id == account_id,
+            Transaction.source == TRADE_SOURCE,
+            Transaction.import_hash.isnot(None),
+        )
+    )
+    existing_hashes = {h for h in existing_result.scalars().all() if h}
+
+    try:
+        preview = await preview_trades(content, existing_hashes=existing_hashes, account_id=account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    approved = {t.import_hash for t in preview.trades}
+    try:
+        result = await confirm_trades(db, user_id, account_id, preview.trades, approved)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if result["saved"] > 0:
+        await cache_invalidate_user(user_id)
+
+    if result["saved"] == 0 and result["skipped_duplicates"] == 0:
+        raise HTTPException(status_code=422, detail="No trades found in PDF.")
+
+    return ImportResultResponse(
+        total_rows=preview.total_trades,
+        imported=result["saved"],
+        duplicates=result["skipped_duplicates"],
+        errors=0,
+        error_details=[],
+        transaction_ids=[],
+        broker_detected="Intesa Sanpaolo",
     )

@@ -334,6 +334,22 @@ const BROKERS: BrokerInfo[] = [
       "Click Generate key, then copy your API Key and Private Key below",
     ],
   },
+  {
+    id: "intesa_sanpaolo",
+    label: "Intesa Sanpaolo",
+    country: "IT",
+    currency: "EUR",
+    instructions: [
+      "Login to your Intesa Sanpaolo account (app or website)",
+      "Go to your Deposito Amministrato (securities account)",
+      "Open the trade history / operations section",
+      "For each executed trade, open the 'Conferma Operazione in Titoli' (trade confirmation)",
+      "Download the PDF — one trade per page, multi-page PDFs contain multiple trades",
+      "Upload one PDF below; all trades in the file are imported at once",
+    ],
+    fileTypes: "PDF",
+    notes: "Each trade becomes a BUY or SELL with its execution date, price, and fees. EUR amounts are auto-converted to AUD. Re-uploading the same PDF skips duplicates.",
+  },
 ];
 
 // ─── Currency Display ─────────────────────────────────────────────────────
@@ -408,6 +424,7 @@ function BrokerUploadPanel({
       "text/x-csv": [".csv"],
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
       "application/vnd.ms-excel": [".xls"],
+      "application/pdf": [".pdf"],
       "application/octet-stream": [".csv", ".txt"],
     },
     disabled: isCreating,
