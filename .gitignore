@@ -85,3 +85,5 @@ docs/intesa-sample/sample-transactions/TFAMB00001_double.pdf
 
 # Kept secret for security reason: redact pdfs used for transaction tests
 sh/pdfAnonymizer.py
+
+~$*.xlsx
