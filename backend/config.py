@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # gemini_model = synthesis-quality model used when Gemini is the chosen provider
     gemini_model: str = "gemma-4-31b-it"
 
+    # Mistral AI (La Plateforme — console.mistral.ai)
+    mistral_api_key: SecretStr = SecretStr("")
+    mistral_model: str = "mistral-large-latest"
+
     # ─── Multi-agent models (Phase 3) ────────────────────────────────────
     # Specialist agents: Gemma 4 MoE (26B total / 4B active) — fast and free
     agent_model_cheap: str = "gemma-4-26b-a4b-it"

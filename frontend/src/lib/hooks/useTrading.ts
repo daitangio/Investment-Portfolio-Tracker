@@ -3,7 +3,7 @@ import { api, apiSlow } from "@/lib/api/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type Provider = "claude" | "openai" | "gemini" | "ollama" | "lmstudio";
+export type Provider = "claude" | "openai" | "gemini" | "ollama" | "lmstudio" | "mistral";
 export type Horizon = "trading" | "investing";
 export type AssetClass = "EQUITY" | "CRYPTO" | "ETF";
 

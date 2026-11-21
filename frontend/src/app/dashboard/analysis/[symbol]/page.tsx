@@ -600,12 +600,12 @@ export default function AnalysisPage() {
           <div className="flex flex-col gap-1.5">
             <label className="text-xs text-gray-500 uppercase tracking-wider">AI Provider</label>
             <div className="flex bg-gray-800 rounded-lg p-1 gap-1 flex-wrap">
-              {(["gemini", "claude", "openai"] as Provider[]).map((p) => (
+              {(["gemini", "claude", "openai", "mistral"] as Provider[]).map((p) => (
                 <button key={p} onClick={() => setProvider(p)}
                   className={clsx("px-3 py-1.5 rounded text-sm font-medium transition-colors",
                     provider === p ? "bg-blue-600 text-white" : "text-gray-400 hover:text-gray-200"
                   )}>
-                  {p === "claude" ? "Claude" : p === "openai" ? "GPT-4o" : "Gemini ✦"}
+                  {p === "claude" ? "Claude" : p === "openai" ? "GPT-4o" : p === "mistral" ? "Mistral" : "Gemini ✦"}
                 </button>
               ))}
               <button onClick={() => setProvider("ollama")} disabled={!ollamaStatus?.available}
@@ -746,9 +746,10 @@ export default function AnalysisPage() {
                     provider === "claude"  ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
                     provider === "openai" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
                     provider === "ollama" ? "bg-violet-500/10 text-violet-400 border-violet-500/20" :
+                    provider === "mistral" ? "bg-orange-500/10 text-orange-400 border-orange-500/20" :
                     "bg-blue-500/10 text-blue-400 border-blue-500/20"
                   )}>
-                    {provider === "claude" ? "Claude" : provider === "openai" ? "GPT-4o" : provider === "ollama" ? "Local · Ollama" : "Gemini"}
+                    {provider === "claude" ? "Claude" : provider === "openai" ? "GPT-4o" : provider === "ollama" ? "Local · Ollama" : provider === "mistral" ? "Mistral" : "Gemini"}
                   </span>
                 </div>
                 <p className="text-gray-200 text-sm leading-relaxed">{result.summary}</p>

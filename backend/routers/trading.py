@@ -52,7 +52,7 @@ class AnalyzeRequest(BaseModel):
     sector: Optional[str] = None
     coingecko_id: Optional[str] = None
     horizon: Literal["trading", "investing"] = "trading"
-    provider: Literal["claude", "openai", "gemini", "ollama", "lmstudio"] = "gemini"
+    provider: Literal["claude", "openai", "gemini", "ollama", "lmstudio", "mistral"] = "gemini"
     extra_context: Optional[str] = None
     as_of_date: Optional[str] = None  # ISO date "YYYY-MM-DD" — analyze up to this date
 
@@ -439,7 +439,7 @@ async def analyze_asset(
     """
     Run AI analysis on an asset.
 
-    - provider: "claude" | "openai" | "gemini" | "ollama"
+    - provider: "claude" | "openai" | "gemini" | "ollama" | "lmstudio" | "mistral"
     - horizon:  "trading" (short/medium) | "investing" (medium/long)
     """
     import asyncio

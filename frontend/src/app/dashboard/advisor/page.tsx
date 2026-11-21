@@ -30,6 +30,7 @@ const PROVIDER_CONFIG: Record<Provider, { label: string; color: string; dot: str
   openai:   { label: "GPT-4o",    color: "bg-green-600",  dot: "bg-green-400" },
   ollama:   { label: "Ollama",    color: "bg-violet-600", dot: "bg-violet-400" },
   lmstudio: { label: "LM Studio", color: "bg-teal-600",   dot: "bg-teal-400" },
+  mistral:  { label: "Mistral",   color: "bg-orange-600", dot: "bg-orange-400" },
 };
 
 export default function AdvisorPage() {

@@ -3,7 +3,7 @@ Shared LLM call infrastructure for the multi-agent pipeline.
 
 Provides:
   • Pydantic output models for each specialist agent
-  • Parameterised low-level LLM runners (Gemini, OpenAI, Claude, Ollama) with model override
+  • Parameterised low-level LLM runners (Gemini, OpenAI, Claude, Ollama, Mistral) with model override
   • call_cheap_llm()     — auto-selects cheapest available provider
   • call_synthesis_llm() — uses user-chosen provider with best model
 """
@@ -22,7 +22,7 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-Provider = Literal["claude", "openai", "gemini", "ollama", "lmstudio"]
+Provider = Literal["claude", "openai", "gemini", "ollama", "lmstudio", "mistral"]
 
 
 # ─── Pydantic output models ───────────────────────────────────────────────────
@@ -104,6 +104,39 @@ def _gemini_error(resp: httpx.Response) -> str:
     return f"Gemini API returned {resp.status_code}"
 
 
+def _mistral_error(resp: httpx.Response) -> str:
+    try:
+        msg = resp.json().get("message", "") or resp.json().get("error", {}).get("message", "")
+        if resp.status_code == 401:
+            return "Mistral API key invalid or missing — get one at console.mistral.ai"
+        if resp.status_code == 429:
+            return "Mistral rate limit exceeded — please retry or upgrade your plan at console.mistral.ai"
+        if resp.status_code >= 500:
+            return "Mistral service temporarily unavailable — please retry"
+        if msg:
+            return f"Mistral API error: {msg[:300]}"
+    except Exception:
+        pass
+    return f"Mistral API returned {resp.status_code}"
+
+
+def _mistral_content_text(content) -> str:
+    """Extract text from Mistral's message content.
+
+    Newer Mistral models (with reasoning) return content as a list of blocks
+    like [{'type': 'thinking', ...}, {'type': 'text', 'text': '...'}].
+    Older models return a plain string. Handle both.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content) if content is not None else ""
+
+
 # ─── Parameterised LLM runners ────────────────────────────────────────────────
 
 async def _run_gemini_model(
@@ -165,6 +198,52 @@ async def _run_openai_model(
         resp.raise_for_status()
         data = resp.json()
     return extract_json(data["choices"][0]["message"]["content"])
+
+
+# ─── Mistral AI (La Plateforme — OpenAI-compatible) ──────────────────────────
+
+async def _run_mistral_model(
+    system: str,
+    user_msg: str,
+    model: str,
+    api_key: str,
+    max_tokens: int,
+) -> dict | None:
+    """Structured JSON extraction via Mistral's OpenAI-compatible chat completions endpoint."""
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+    }
+    logger.info("[Mistral] model request: model=%s max_tokens=%d user_msg_len=%d", model, max_tokens, len(user_msg))
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if not resp.is_success:
+            logger.error("[Mistral] model FAILED: status=%d body=%s", resp.status_code, resp.text[:500])
+            raise RuntimeError(_mistral_error(resp))
+        data = resp.json()
+    raw_content = data["choices"][0]["message"]["content"]
+    text = _mistral_content_text(raw_content)
+    logger.info(
+        "[Mistral] model response: content_type=%s raw_preview=%s extracted_len=%d extracted_preview=%s usage=%s",
+        type(raw_content).__name__,
+        repr(raw_content)[:400],
+        len(text),
+        text[:300],
+        data.get("usage", {}),
+    )
+    result = extract_json(text)
+    if result is None:
+        logger.warning("[Mistral] model returned unparseable JSON! extracted_text=%s", text[:500])
+    return result
 
 
 async def _run_claude_model(
@@ -370,6 +449,41 @@ async def _run_openai_chat(
     return resp.json()["choices"][0]["message"]["content"]
 
 
+async def _run_mistral_chat(
+    messages: list[dict],
+    system: str,
+    model: str,
+    api_key: str,
+    max_tokens: int,
+) -> str:
+    """Multi-turn chat via Mistral's OpenAI-compatible chat completions endpoint."""
+    msgs = [{"role": "system", "content": system}] + messages
+    logger.info("[Mistral] chat request: model=%s messages=%d max_tokens=%d", model, len(msgs), max_tokens)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "max_tokens": max_tokens, "messages": msgs},
+        )
+        if not resp.is_success:
+            logger.error("[Mistral] chat FAILED: status=%d body=%s", resp.status_code, resp.text[:500])
+            raise RuntimeError(_mistral_error(resp))
+        data = resp.json()
+    raw_content = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    logger.info(
+        "[Mistral] chat response: status=200 content_type=%s content_preview=%s usage=%s",
+        type(raw_content).__name__,
+        repr(raw_content)[:500],
+        usage,
+    )
+    text = _mistral_content_text(raw_content)
+    logger.info("[Mistral] chat extracted text: len=%d preview=%s", len(text), text[:300])
+    if not text:
+        logger.warning("[Mistral] chat returned EMPTY text! raw_content=%s", repr(raw_content)[:500])
+    return text
+
+
 async def _run_gemini_chat(
     messages: list[dict],
     system: str,
@@ -469,6 +583,15 @@ async def call_chat_llm(
             raise ValueError("OpenAI API key not configured")
         return await _run_openai_chat(messages, system, settings.openai_model, api_key, max_tokens)
 
+    elif provider == "mistral":
+        api_key = settings.mistral_api_key.get_secret_value()
+        key_ok = _key_valid(api_key)
+        logger.info("[Mistral] call_chat_llm: key_valid=%s key_prefix=%s model=%s",
+                    key_ok, api_key[:8] + "..." if api_key else "NONE", settings.mistral_model)
+        if not key_ok:
+            raise ValueError("Mistral API key not configured — set MISTRAL_API_KEY in .env (get one at console.mistral.ai)")
+        return await _run_mistral_chat(messages, system, settings.mistral_model, api_key, max_tokens)
+
     elif provider == "claude":
         api_key = settings.anthropic_api_key.get_secret_value()
         if not _key_valid(api_key):
@@ -557,6 +680,18 @@ async def call_cheap_llm(
         except Exception as exc:
             logger.debug("Cheap GPT-4o-mini call failed: %s", exc)
 
+    # 3.5 Mistral Ministrail 8B (paid, but cheap)
+    mistral_key = settings.mistral_api_key.get_secret_value()
+    if _key_valid(mistral_key):
+        try:
+            result = await _run_mistral_model(
+                system, user_msg, "ministral-8b-latest", mistral_key, max_tokens
+            )
+            if result is not None:
+                return result
+        except Exception as exc:
+            logger.debug("Cheap Mistral call failed: %s", exc)
+
     # 4. Fallback to synthesis provider
     try:
         if synthesis_provider == "gemini" and _key_valid(gemini_key):
@@ -573,6 +708,10 @@ async def call_cheap_llm(
                 return await _run_claude_model(
                     system, user_msg, settings.agent_model_synthesis, claude_key, max_tokens
                 )
+        elif synthesis_provider == "mistral" and _key_valid(mistral_key):
+            return await _run_mistral_model(
+                system, user_msg, settings.mistral_model, mistral_key, max_tokens
+            )
     except ValueError:
         raise  # Credits error — propagate
     except Exception as exc:
@@ -616,6 +755,13 @@ async def call_synthesis_llm(
             raise ValueError("OpenAI API key not configured")
         return await _run_openai_model(
             system, user_msg, settings.openai_model, api_key, max_tokens
+        )
+    elif provider == "mistral":
+        api_key = settings.mistral_api_key.get_secret_value()
+        if not _key_valid(api_key):
+            raise ValueError("Mistral API key not configured — set MISTRAL_API_KEY in .env (get one at console.mistral.ai)")
+        return await _run_mistral_model(
+            system, user_msg, settings.mistral_model, api_key, max_tokens
         )
     elif provider == "gemini":
         api_key = settings.gemini_api_key.get_secret_value()

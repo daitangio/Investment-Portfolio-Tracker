@@ -4,7 +4,7 @@ AI Portfolio Advisor Service — multi-provider, portfolio-context-aware.
 Pre-fetches the user's holdings and injects them into the system prompt so
 the LLM always has full portfolio context without needing tool-use round trips.
 
-Supported providers: gemini (default), claude, openai, ollama, lmstudio
+Supported providers: gemini (default), claude, openai, ollama, lmstudio, mistral
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from shared.models import AdvisorConversation, User
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-Provider = str  # "claude" | "openai" | "gemini" | "ollama" | "lmstudio"
+Provider = str  # "claude" | "openai" | "gemini" | "ollama" | "lmstudio" | "mistral"
 
 _SYSTEM_TEMPLATE = """You are an expert investment intelligence assistant for a personal fintech platform.
 You have deep knowledge of equities, crypto, ETFs, portfolio management, and Australian tax rules (CGT discount, FIFO/LIFO, ATO financial year July-June).
@@ -101,13 +101,19 @@ class AIAdvisorService:
         messages.append({"role": "user", "content": message})
 
         try:
+            logger.info("[Advisor] chat: provider=%s session=%s msg_len=%d history_msgs=%d",
+                        provider, session_id, len(message), len(messages))
             response_text = await call_chat_llm(
                 messages=messages,
                 system=system,
                 provider=provider,  # type: ignore[arg-type]
                 max_tokens=2000,
             )
+            logger.info("[Advisor] chat response: provider=%s type=%s len=%d preview=%s",
+                        provider, type(response_text).__name__, len(response_text) if response_text else 0,
+                        repr(response_text)[:300] if response_text else "EMPTY")
         except (ValueError, RuntimeError) as exc:
+            logger.error("[Advisor] chat FAILED: provider=%s error=%s", provider, exc)
             raise
 
         # Save

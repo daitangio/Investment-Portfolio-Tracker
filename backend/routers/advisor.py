@@ -26,7 +26,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    provider: str = "gemini"  # "claude" | "openai" | "gemini" | "ollama" | "lmstudio"
+    provider: str = "gemini"  # "claude" | "openai" | "gemini" | "ollama" | "lmstudio" | "mistral"
 
 
 class ChatResponse(BaseModel):

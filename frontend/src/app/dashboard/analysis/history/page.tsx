@@ -53,7 +53,7 @@ const REC_COLOR: Record<string, string> = {
 };
 
 const PROVIDER_LABEL: Record<string, string> = {
-  claude: "Claude", openai: "GPT-4o", gemini: "Gemini", ollama: "Local",
+  claude: "Claude", openai: "GPT-4o", gemini: "Gemini", ollama: "Local", mistral: "Mistral",
 };
 
 function ScorePill({ score, label }: { score: number | null; label: string }) {
