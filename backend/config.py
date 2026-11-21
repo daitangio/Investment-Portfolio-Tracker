@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     mistral_api_key: SecretStr = SecretStr("")
     mistral_model: str = "mistral-large-latest"
 
+    # Set AI_ADVISOR_DEBUG=true to log full LLM request/response payloads (inputs + outputs)
+    ai_advisor_debug: bool = False
+
     # ─── Multi-agent models (Phase 3) ────────────────────────────────────
     # Specialist agents: Gemma 4 MoE (26B total / 4B active) — fast and free
     agent_model_cheap: str = "gemma-4-26b-a4b-it"

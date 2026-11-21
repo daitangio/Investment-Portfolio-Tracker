@@ -101,17 +101,22 @@ class AIAdvisorService:
         messages.append({"role": "user", "content": message})
 
         try:
-            logger.info("[Advisor] chat: provider=%s session=%s msg_len=%d history_msgs=%d",
-                        provider, session_id, len(message), len(messages))
+            if settings.ai_advisor_debug:
+                logger.info("[Advisor] chat: provider=%s session=%s msg_len=%d history_msgs=%d system_len=%d",
+                            provider, session_id, len(message), len(messages), len(system))
+                logger.info("[Advisor] chat INPUT messages=%s",
+                            [{**m, "content": m["content"][:200]} for m in messages])
             response_text = await call_chat_llm(
                 messages=messages,
                 system=system,
                 provider=provider,  # type: ignore[arg-type]
                 max_tokens=2000,
             )
-            logger.info("[Advisor] chat response: provider=%s type=%s len=%d preview=%s",
-                        provider, type(response_text).__name__, len(response_text) if response_text else 0,
-                        repr(response_text)[:300] if response_text else "EMPTY")
+            if settings.ai_advisor_debug:
+                logger.info("[Advisor] chat OUTPUT: provider=%s type=%s len=%d preview=%s",
+                            provider, type(response_text).__name__,
+                            len(response_text) if response_text else 0,
+                            repr(response_text)[:500] if response_text else "EMPTY")
         except (ValueError, RuntimeError) as exc:
             logger.error("[Advisor] chat FAILED: provider=%s error=%s", provider, exc)
             raise

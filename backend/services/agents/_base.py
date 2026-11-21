@@ -219,7 +219,8 @@ async def _run_mistral_model(
             {"role": "user", "content": user_msg},
         ],
     }
-    logger.info("[Mistral] model request: model=%s max_tokens=%d user_msg_len=%d", model, max_tokens, len(user_msg))
+    if _debug():
+        logger.info("[Mistral] model REQUEST payload=%s", json.dumps(payload, default=str)[:4000])
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             "https://api.mistral.ai/v1/chat/completions",
@@ -232,14 +233,15 @@ async def _run_mistral_model(
         data = resp.json()
     raw_content = data["choices"][0]["message"]["content"]
     text = _mistral_content_text(raw_content)
-    logger.info(
-        "[Mistral] model response: content_type=%s raw_preview=%s extracted_len=%d extracted_preview=%s usage=%s",
-        type(raw_content).__name__,
-        repr(raw_content)[:400],
-        len(text),
-        text[:300],
-        data.get("usage", {}),
-    )
+    if _debug():
+        logger.info(
+            "[Mistral] model RESPONSE: content_type=%s raw=%s extracted_len=%d extracted=%s usage=%s",
+            type(raw_content).__name__,
+            repr(raw_content)[:2000],
+            len(text),
+            text[:500],
+            data.get("usage", {}),
+        )
     result = extract_json(text)
     if result is None:
         logger.warning("[Mistral] model returned unparseable JSON! extracted_text=%s", text[:500])
@@ -458,7 +460,9 @@ async def _run_mistral_chat(
 ) -> str:
     """Multi-turn chat via Mistral's OpenAI-compatible chat completions endpoint."""
     msgs = [{"role": "system", "content": system}] + messages
-    logger.info("[Mistral] chat request: model=%s messages=%d max_tokens=%d", model, len(msgs), max_tokens)
+    if _debug():
+        logger.info("[Mistral] chat REQUEST: model=%s max_tokens=%d payload=%s",
+                    model, max_tokens, json.dumps({"model": model, "max_tokens": max_tokens, "messages": msgs}, default=str)[:6000])
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             "https://api.mistral.ai/v1/chat/completions",
@@ -471,14 +475,16 @@ async def _run_mistral_chat(
         data = resp.json()
     raw_content = data["choices"][0]["message"]["content"]
     usage = data.get("usage", {})
-    logger.info(
-        "[Mistral] chat response: status=200 content_type=%s content_preview=%s usage=%s",
-        type(raw_content).__name__,
-        repr(raw_content)[:500],
-        usage,
-    )
+    if _debug():
+        logger.info(
+            "[Mistral] chat RESPONSE: content_type=%s raw=%s usage=%s",
+            type(raw_content).__name__,
+            repr(raw_content)[:3000],
+            usage,
+        )
     text = _mistral_content_text(raw_content)
-    logger.info("[Mistral] chat extracted text: len=%d preview=%s", len(text), text[:300])
+    if _debug():
+        logger.info("[Mistral] chat extracted text: len=%d preview=%s", len(text), text[:500])
     if not text:
         logger.warning("[Mistral] chat returned EMPTY text! raw_content=%s", repr(raw_content)[:500])
     return text
@@ -586,8 +592,9 @@ async def call_chat_llm(
     elif provider == "mistral":
         api_key = settings.mistral_api_key.get_secret_value()
         key_ok = _key_valid(api_key)
-        logger.info("[Mistral] call_chat_llm: key_valid=%s key_prefix=%s model=%s",
-                    key_ok, api_key[:8] + "..." if api_key else "NONE", settings.mistral_model)
+        if _debug():
+            logger.info("[Mistral] call_chat_llm: key_valid=%s key_prefix=%s model=%s",
+                        key_ok, api_key[:8] + "..." if api_key else "NONE", settings.mistral_model)
         if not key_ok:
             raise ValueError("Mistral API key not configured — set MISTRAL_API_KEY in .env (get one at console.mistral.ai)")
         return await _run_mistral_chat(messages, system, settings.mistral_model, api_key, max_tokens)
@@ -616,6 +623,11 @@ async def call_chat_llm(
 
 def _key_valid(key: str) -> bool:
     return bool(key) and len(key) > 10 and not key.startswith("your-") and key != "sk-..."
+
+
+def _debug() -> bool:
+    """True when AI_ADVISOR_DEBUG=true — gates verbose LLM request/response logging."""
+    return settings.ai_advisor_debug
 
 
 async def call_cheap_llm(
