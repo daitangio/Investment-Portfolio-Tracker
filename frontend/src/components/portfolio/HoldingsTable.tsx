@@ -409,7 +409,9 @@ export function HoldingsTable({
 
                   {/* Price */}
                   <td className="py-3 pr-3 text-right font-mono text-gray-300">
-                    {h.last_price ? fmtMoney(h.last_price) : "—"}
+                    {h.last_price
+                      ? fmtMoney(h.asset_class === "BOND" ? h.last_price * 100 : h.last_price)
+                      : "—"}
                   </td>
 
                   {/* Quantity */}

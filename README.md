@@ -23,6 +23,9 @@ InvestIQ helps you track investments across brokers and exchanges, convert mixed
 - Review performance, allocation, risk, drawdowns, and benchmark comparison from the main dashboard.
 - Use AI analysis and a portfolio advisor with Gemini, Claude, OpenAI, Ollama, or LM Studio.
 - Run locally with Docker Compose, PostgreSQL, Redis, FastAPI, and Next.js.
+- Support EUR currency (Still work in progress, WIP)
+- Support Intesa Sanpaolo (see docs/ISP.md)
+- Support Mistra AI analysis (WIP)
 
 ## Screenshots
 

@@ -684,6 +684,15 @@ class PortfolioEngine:
             rate = fx_rate_cache.get(key, Decimal("1"))
             return (cost_per_unit * rate).quantize(PREC)
 
+        def lot_to_display(cost_per_unit: Decimal, lot: Lot) -> Decimal:
+            """Convert cost per unit from lot currency to display currency directly.
+            When lot currency == display currency, skip the AUD round-trip to avoid
+            FX-rate drift (historical acquisition rate vs current rate)."""
+            from_ccy = _norm_ccy(lot.currency)
+            if from_ccy == target_ccy:
+                return cost_per_unit
+            return aud_to_display(lot_to_aud(cost_per_unit, lot))
+
         def spot_to_aud(amount: Decimal, ccy: str) -> Decimal:
             from_ccy = _norm_ccy(ccy)
             if from_ccy == "AUD":
@@ -718,11 +727,12 @@ class PortfolioEngine:
             asset = assets[asset_id]
             asset_ccy = self._asset_price_currency(asset)
 
-            # Cost basis — normalize each lot to AUD using historical FX first.
+            # Cost basis — AUD for gain math, display currency directly for display.
             cost_basis_aud = ZERO
+            cost_basis_display = ZERO
             for lot in state.open_lots(asset_id):
                 cost_basis_aud += (lot.quantity_remaining * lot_to_aud(lot.cost_basis_per_unit, lot)).quantize(PREC)
-            cost_basis_display = aud_to_display(cost_basis_aud)
+                cost_basis_display += (lot.quantity_remaining * lot_to_display(lot.cost_basis_per_unit, lot)).quantize(PREC)
             avg_cost_display = (cost_basis_display / qty).quantize(PREC) if qty > ZERO else None
             total_cost_basis += cost_basis_display
 
@@ -741,9 +751,10 @@ class PortfolioEngine:
 
                 price_display = aud_to_display(price_aud).quantize(Decimal("0.000001"))
                 market_value_display = aud_to_display(market_value_aud)
-                unrealized_gain = aud_to_display(unrealized_gain_aud)
-                if cost_basis_aud > ZERO:
-                    unrealized_gain_pct = (unrealized_gain_aud / cost_basis_aud * 100).quantize(Decimal("0.01"))
+                # Compute gain in display currency for consistency with totals
+                unrealized_gain = market_value_display - cost_basis_display
+                if cost_basis_display > ZERO:
+                    unrealized_gain_pct = (unrealized_gain / cost_basis_display * 100).quantize(Decimal("0.01"))
 
                 total_market_value += market_value_display
             elif cost_basis_display > ZERO:

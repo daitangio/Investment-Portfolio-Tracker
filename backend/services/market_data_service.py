@@ -93,7 +93,7 @@ class MarketDataService:
             # Italian government bonds etc. are priced by ISIN on Borsa Italiana
             price = await self._borsa_italiana_spot(symbol)
             if price is None:
-                price = await self._get_equity_price(symbol, currency)
+                price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
         else:
             price = await self._get_equity_price(symbol, currency)
 
@@ -161,6 +161,7 @@ class MarketDataService:
         start_date: datetime,
         end_date: datetime,
         currency: str = "USD",
+        asset_class: Optional[str] = None,
     ) -> list[dict]:
         """
         Get daily OHLCV prices for a symbol over a date range.
@@ -175,7 +176,7 @@ class MarketDataService:
         if self._is_crypto(symbol):
             prices = await self._get_crypto_history(symbol, start_date, end_date)
         else:
-            prices = await self._get_equity_history(symbol, start_date, end_date, currency)
+            prices = await self._get_equity_history(symbol, start_date, end_date, currency, asset_class=asset_class)
 
         if prices:
             # Cache historical data for longer
@@ -259,12 +260,13 @@ class MarketDataService:
             try:
                 p = await self._polygon_spot(lookup)
                 if p is not None:
-                    return p
+                    return self._normalize_bond_price(p, asset_class, symbol)
             except Exception as e:
                 logger.warning(f"Polygon failed for {lookup}: {e}")
 
         try:
-            return await self._yahoo_spot(lookup, currency)
+            p = await self._yahoo_spot(lookup, currency)
+            return self._normalize_bond_price(p, asset_class, symbol)
         except Exception as e:
             logger.warning(f"Yahoo failed for {lookup}: {e}")
 
@@ -384,6 +386,22 @@ class MarketDataService:
         quantity(nominal) × price = market value in the portfolio engine."""
         return quoted_pct / 100.0
 
+    @staticmethod
+    def _normalize_bond_price(price: Optional[float], asset_class: Optional[str], symbol: str) -> Optional[float]:
+        """Normalize a raw price to EUR-per-EUR-of-nominal for BOND assets.
+
+        Borsa Italiana MOT quotes % of nominal (e.g. 101.70); fallback providers
+        (Yahoo, Polygon) return the same raw quote for bond ISINs. Divide by 100
+        so quantity(nominal) × price = market value holds consistently across
+        all sources. Only applies when asset_class is explicitly "BOND" — when
+        asset_class is unknown, ETF ISINs (e.g. price 39.64) must NOT be divided.
+        """
+        if price is None:
+            return None
+        if asset_class == "BOND" and price >= 10:
+            return price / 100.0
+        return price
+
     async def _borsa_italiana_spot(self, isin: str, segments: Optional[list[str]] = None) -> Optional[float]:
         """Last-trade price (fallback: official close) for a bond ISIN from Borsa
         Italiana, normalized to EUR per EUR of nominal."""
@@ -438,19 +456,36 @@ class MarketDataService:
             logger.debug(f"Yahoo ISIN search failed for {isin}: {e}")
         return None
 
-    async def _get_equity_history(self, symbol: str, start: datetime, end: datetime, currency: str = "USD") -> list[dict]:
+    async def _get_equity_history(self, symbol: str, start: datetime, end: datetime, currency: str = "USD", asset_class: Optional[str] = None) -> list[dict]:
         """Fetch OHLCV from Polygon or Yahoo."""
         if currency.upper() != "AUD":
             try:
                 prices = await self._polygon_history(symbol, start, end)
                 if prices:
-                    return prices
+                    return self._normalize_history_rows(prices, asset_class, symbol)
             except Exception:
                 pass
         try:
-            return await self._yahoo_history(symbol, start, end, currency)
+            prices = await self._yahoo_history(symbol, start, end, currency)
+            return self._normalize_history_rows(prices, asset_class, symbol)
         except Exception:
             return []
+
+    @staticmethod
+    def _normalize_history_rows(rows: list[dict], asset_class: Optional[str], symbol: str) -> list[dict]:
+        """Divide OHLC values by 100 for BOND assets so historical prices match
+        the EUR-per-EUR-of-nominal convention used by spot prices."""
+        if asset_class != "BOND" or not rows:
+            return rows
+        out = []
+        for r in rows:
+            nr = dict(r)
+            for k in ("open", "high", "low", "close"):
+                v = nr.get(k)
+                if v is not None and v >= 10:
+                    nr[k] = v / 100.0
+            out.append(nr)
+        return out
 
     async def _polygon_history(self, symbol: str, start: datetime, end: datetime) -> list[dict]:
         api_key = settings.polygon_api_key.get_secret_value()
@@ -585,7 +620,7 @@ class MarketDataService:
 
                 if yf_symbol.endswith(".AX"):
                     self._asx_symbols.add(symbol)
-                return rows
+                return self._normalize_history_rows(rows, asset_class, symbol)
             except Exception as e:
                 logger.debug("Yahoo chart history %s %s failed: %s", yf_symbol, interval, e)
                 continue

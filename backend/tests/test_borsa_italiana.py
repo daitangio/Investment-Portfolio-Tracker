@@ -138,5 +138,138 @@ class BorsaItalianaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await svc.resolve_isin_to_ticker("IE00B1YZSC51"), "IWMO.DE")
 
 
+class NormalizeBondPriceTests(unittest.TestCase):
+    """Regression: _normalize_bond_price must divide BOND % quotes by 100
+    but leave ETF/non-bond prices unchanged."""
+
+    def test_bond_isin_raw_pct_divided(self):
+        # IT0005735201 MOT quote 101.70 → 1.017
+        self.assertAlmostEqual(
+            MarketDataService._normalize_bond_price(101.70, "BOND", "IT0005735201"), 1.017
+        )
+
+    def test_bond_already_per_eur_unchanged(self):
+        self.assertAlmostEqual(
+            MarketDataService._normalize_bond_price(0.99, "BOND", "IT0005735201"), 0.99
+        )
+
+    def test_etf_isin_unchanged(self):
+        # IE00B1YZSC51 at 39.64 must NOT be divided
+        self.assertAlmostEqual(
+            MarketDataService._normalize_bond_price(39.64, "ETF", "IE00B1YZSC51"), 39.64
+        )
+
+    def test_etf_isin_no_class_unchanged(self):
+        # Even without asset_class, ETF ISIN price must not be divided
+        self.assertAlmostEqual(
+            MarketDataService._normalize_bond_price(39.64, None, "IE00B1YZSC51"), 39.64
+        )
+
+    def test_none_price(self):
+        self.assertIsNone(MarketDataService._normalize_bond_price(None, "BOND", "IT0005735201"))
+
+    def test_non_isin_unchanged(self):
+        self.assertAlmostEqual(MarketDataService._normalize_bond_price(150.0, None, "AAPL"), 150.0)
+
+
+class YahooFallbackBondNormalizationTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: when Borsa Italiana is down, the Yahoo fallback for a BOND
+    ISIN must still return a normalized (÷100) price, not the raw quote."""
+
+    async def test_yahoo_fallback_normalizes_bond_price(self):
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._asx_symbols = set()
+
+        class YahooResp(FakeResp):
+            def __init__(self):
+                super().__init__(200, "")
+                self._json = {
+                    "chart": {
+                        "result": [{
+                            "meta": {"regularMarketPrice": 101.70, "previousClose": 101.50},
+                        }],
+                        "error": None,
+                    }
+                }
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._json
+
+        # Borsa returns 404 for all segments; Yahoo returns raw 101.70
+        svc._http = FakeHttp({
+            "https://query1.finance.yahoo.com/v8/finance/chart/IT0005735201": YahooResp(),
+        })
+        price = await svc._get_equity_price("IT0005735201", "EUR", asset_class="BOND")
+        self.assertAlmostEqual(price, 1.017)
+
+    async def test_yahoo_fallback_etf_not_normalized(self):
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._asx_symbols = set()
+
+        class YahooResp(FakeResp):
+            def __init__(self):
+                super().__init__(200, "")
+                self._json = {
+                    "chart": {
+                        "result": [{
+                            "meta": {"regularMarketPrice": 39.64, "previousClose": 39.50},
+                        }],
+                        "error": None,
+                    }
+                }
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._json
+
+        svc._http = FakeHttp({
+            "https://query1.finance.yahoo.com/v8/finance/chart/IWMO.DE": YahooResp(),
+        })
+        price = await svc._get_equity_price("IE00B1YZSC51", "EUR", asset_class="ETF", ticker="IWMO.DE")
+        self.assertAlmostEqual(price, 39.64)
+
+
+class BondMarketValueRegressionTests(unittest.TestCase):
+    """Regression: IT0005735201 — 3000 EUR nominal at MOT quote 101.70 →
+    market value 3051 EUR, displayed bond price 101.70 (last_price × 100), gain ≈ +1.70%."""
+
+    def test_market_value_and_display_price(self):
+        from decimal import Decimal
+        price = MarketDataService._normalize_bond_price(101.70, "BOND", "IT0005735201")
+        self.assertAlmostEqual(price, 1.017)
+        qty = Decimal("3000")
+        market_value = qty * Decimal(str(price))
+        self.assertAlmostEqual(float(market_value), 3051.0, places=1)
+        # Frontend displays last_price × 100 for BOND rows
+        display_price = Decimal(str(price)) * 100
+        self.assertAlmostEqual(float(display_price), 101.70, places=2)
+        cost = Decimal("3000")
+        gain_pct = float((market_value - cost) / cost * 100)
+        self.assertAlmostEqual(gain_pct, 1.70, places=1)
+
+
+class NormalizeHistoryRowsTests(unittest.TestCase):
+    def test_bond_rows_divided(self):
+        rows = [{"date": "2026-01-01", "open": 100.5, "high": 101.7, "low": 100.2, "close": 101.7, "volume": 1000}]
+        out = MarketDataService._normalize_history_rows(rows, "BOND", "IT0005735201")
+        self.assertAlmostEqual(out[0]["close"], 1.017)
+        self.assertAlmostEqual(out[0]["open"], 1.005)
+
+    def test_non_bond_rows_unchanged(self):
+        rows = [{"date": "2026-01-01", "open": 100.5, "high": 101.7, "low": 100.2, "close": 101.7, "volume": 1000}]
+        out = MarketDataService._normalize_history_rows(rows, "ETF", "IWMO.DE")
+        self.assertAlmostEqual(out[0]["close"], 101.7)
+
+    def test_empty_rows(self):
+        self.assertEqual(MarketDataService._normalize_history_rows([], "BOND", "IT0005735201"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

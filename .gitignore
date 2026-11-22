@@ -87,3 +87,5 @@ docs/intesa-sample/sample-transactions/TFAMB00001_double.pdf
 sh/pdfAnonymizer.py
 
 ~$*.xlsx
+docs/test-privato/*
+
