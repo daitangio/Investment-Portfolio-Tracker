@@ -54,6 +54,9 @@ class MarketDataService:
     # in custody (what bank statements and the Intesa import show) and the
     # definitive market ISIN quoted on MOT, announced by MEF at placement close.
     # Only the market ISIN has a MOT scheda page, so quotes route through it.
+    #
+    # GG FIXME: la tabella statica è perdente, cercare sul sole24ore una soluzione migliore
+    #
     _BOND_ISIN_ALIASES = {
         "IT0005713539": "IT0005713547",  # BTP Italia Sì 23GN31 1,60CUM
         "IT0005634792": "IT0005634800",  # BTP Più 25FB33 SU PUT
@@ -375,8 +378,11 @@ class MarketDataService:
 
     @classmethod
     def _parse_borsa_official_close(cls, html: str) -> Optional[tuple[float, Optional[datetime]]]:
-        """Market data table: <strong>Official Close</strong> ... <span class="t-text -right">99.54607</span>"""
-        m = re.search(r'Official Close</strong>.*?t-text -right">\s*([\d]+(?:[.,][\d]+)?)', html, re.S)
+        """Market data table: <strong>Official Close</strong> ... <span class="t-text -right">99.54607</span>
+        The price must sit in the label's own value cell (first t-text -right
+        span within a ~120-char window): a quoted "N.A." or empty cell returns
+        None instead of scanning forward to an unrelated numeric cell."""
+        m = re.search(r'Official Close</strong>.{0,120}?t-text -right">\s*([\d]+(?:[.,][\d]+)?)', html, re.S)
         if not m:
             return None
         price = cls._parse_it_float(m.group(1))
@@ -420,8 +426,12 @@ class MarketDataService:
     @classmethod
     def _parse_borsa_closing_price(cls, html: str) -> Optional[float]:
         """Scheda market-data table: <strong>Closing Price</strong> ...
-        <span class="t-text -right">81.39</span>"""
-        m = re.search(r'Closing Price</strong>.*?t-text -right">\s*([\d]+(?:[.,][\d]+)?)\s*</span>', html, re.S)
+        <span class="t-text -right">81.39</span>
+        The value must sit in the label's own value cell (first t-text -right
+        span within a ~120-char window; observed 55 on live pages): a quoted
+        "N.A." while the market is open returns None instead of scanning
+        forward to an unrelated numeric cell (e.g. Number Trades)."""
+        m = re.search(r'Closing Price</strong>.{0,120}?t-text -right">\s*([\d]+(?:[.,][\d]+)?)\s*</span>', html, re.S)
         return cls._parse_it_float(m.group(1)) if m else None
 
     async def _borsa_italiana_page(self, isin: str, segment: str) -> Optional[str]:
@@ -520,15 +530,15 @@ class MarketDataService:
 
     async def borsa_etf_official_close(self, isin: str) -> Optional[float]:
         """Day's closing price in EUR for an ETF ISIN from the ETFPlus scheda
-        page (the page carries no explicit date; the caller dates the row)."""
+        page (the page carries no explicit date; the caller dates the row).
+        A "N.A." cell (market open) returns the parse result unchanged — never
+        the summary last trade — so the daily refresh skips the asset for that
+        run instead of storing a live intraday price as the day's close."""
         isin = isin.upper()
         html = await self._borsa_italiana_page(isin, "etf")
         if html is None:
             return None
-        price = self._parse_borsa_closing_price(html)
-        if price is None:
-            price = self._parse_borsa_last_price(html)
-        return price
+        return self._parse_borsa_closing_price(html)
 
     async def resolve_isin_to_ticker(self, isin: str, currency: str = "EUR") -> Optional[str]:
         """Resolve an ISIN (e.g. an ETF) to a Yahoo Finance ticker.

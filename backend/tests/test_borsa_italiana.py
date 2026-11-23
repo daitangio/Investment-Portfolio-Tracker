@@ -42,6 +42,44 @@ BORSA_ETF_HTML = """
 </tbody></table>
 """
 
+# ETFPlus scheda captured MID-SESSION (IE00B1YZSC51, 2026-11-23 16:16 CET,
+# market open; raw capture kept at
+# openspec/changes/add-etf-scheda-na-guard-fix/fixtures/): last trade 39.56
+# quoted while "Closing Price" reads N.A.; Number Trades 49 and Turnover
+# 986,540.94 follow in the same table — the cells the old unbounded regex
+# picked garbage closes (trade counts) from.
+BORSA_ETF_NA_HTML = """
+<div class="l-box u-pt u-pb"> <div class="summary-value">
+<span class="t-text -black-warm-60 -formatPrice">
+<strong>39.56</strong>
+</span> </div>
+<table><tbody>
+<tr><td><span class="t-text"><strong>Day High</strong></span></td>
+<td><span class="t-text -right">39.57</span></td></tr>
+<tr><td><span class="t-text"><strong>Day Low</strong></span></td>
+<td><span class="t-text -right">39.035</span></td></tr>
+<tr><td><span class="t-text"><strong>Closing Price</strong></span></td>
+<td><span class="t-text -right">N.A.</span></td></tr>
+<tr><td><span class="t-text"><strong>Number Trades</strong></span></td>
+<td><span class="t-text -right">49</span></td></tr>
+<tr><td><span class="t-text"><strong>Turnover</strong></span></td>
+<td><span class="t-text -right">986,540.94</span></td></tr>
+</tbody></table>
+"""
+
+# Bond scheda variant with the "Official Close" cell quoted N.A. — the later
+# numeric rows (close date, Interest Rate) must never become the close.
+BORSA_BOND_NA_HTML = """
+<table>
+<tr><td><span class="t-text"><strong>Official Close</strong></span></td>
+<td><span class="t-text -right">N.A.</span></td></tr>
+<tr><td><span class="t-text"><strong>Official Close Date</strong></span></td>
+<td><span class="t-text -right">26/11/20</span></td></tr>
+<tr><td><span class="t-text"><strong>Interest Rate</strong></span></td>
+<td><span class="t-text -right">2,70</span></td></tr>
+</table>
+"""
+
 
 class FakeResp:
     def __init__(self, status_code: int, text: str = ""):
@@ -293,6 +331,41 @@ class BorsaEtfPlusTests(unittest.IsolatedAsyncioTestCase):
              patch("services.market_data_service.cache_set", new=_cache_noop):
             price = await svc.get_price("LU1900066033", "EUR", asset_class="ETF")
         self.assertAlmostEqual(price, 81.39)
+
+
+class SchedaNaGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Regression (live captures of 2026-11-23, market open — raw pages kept in
+    openspec/changes/add-etf-scheda-na-guard-fix/fixtures/): a quoted "N.A."
+    cell yields no price, never a numeric value scanned forward from another
+    cell. The old unbounded regex stored garbage closes (the midday Number
+    Trades counts: 19.00 for IE00B1YZSC51, 134.00 for LU1900066033), deleted
+    by hand; and no last-trade sneak-in may relabel an intraday quote CLOSE."""
+
+    def test_etf_mid_session_na_yields_none_not_trades(self):
+        self.assertIsNone(MarketDataService._parse_borsa_closing_price(BORSA_ETF_NA_HTML))
+
+    def test_etf_populated_cell_yields_price(self):
+        populated = BORSA_ETF_NA_HTML.replace("N.A.", "38.91")
+        self.assertAlmostEqual(MarketDataService._parse_borsa_closing_price(populated), 38.91)
+
+    def test_bond_official_close_na_yields_none(self):
+        # Old behavior: scanned forward and returned the close-date day digits
+        self.assertIsNone(MarketDataService._parse_borsa_official_close(BORSA_BOND_NA_HTML))
+
+    async def test_etf_official_close_no_last_trade_fallback(self):
+        # Market open: summary last trade 39.56 quoted, closing N.A. -> None
+        # (the daily refresh skips the asset), never 39.56 as a CLOSE row
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_NA_HTML)})
+        self.assertIsNone(await svc.borsa_etf_official_close("IE00B1YZSC51"))
+
+    async def test_etf_official_close_populated_cell(self):
+        populated = BORSA_ETF_NA_HTML.replace("N.A.", "38.91")
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, populated)})
+        self.assertAlmostEqual(await svc.borsa_etf_official_close("IE00B1YZSC51"), 38.91)
 
 
 class BondIsinAliasTests(unittest.IsolatedAsyncioTestCase):

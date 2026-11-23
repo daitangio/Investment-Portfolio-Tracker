@@ -322,6 +322,28 @@ class EtfPlusLivePricingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(float(aud.holdings[0].market_value), 1302.24, places=2)
 
 
+# ETFPlus scheda mid-session (captured live 2026-11-23, market open): last
+# trade 39.56 quoted in the summary block while "Closing Price" reads N.A.,
+# with Number Trades 49 and Turnover 986,540.94 in the same table — the cells
+# the old unbounded parse picked garbage closes from.
+ETF_SCHEDA_NA = """
+<div class="l-box u-pt u-pb"> <div class="summary-value">
+<span class="t-text -black-warm-60 -formatPrice">
+<strong>39.56</strong>
+</span> </div>
+<table><tbody>
+<tr><td><span class="t-text"><strong>Day Low</strong></span></td>
+<td><span class="t-text -right">39.035</span></td></tr>
+<tr><td><span class="t-text"><strong>Closing Price</strong></span></td>
+<td><span class="t-text -right">N.A.</span></td></tr>
+<tr><td><span class="t-text"><strong>Number Trades</strong></span></td>
+<td><span class="t-text -right">49</span></td></tr>
+<tr><td><span class="t-text"><strong>Turnover</strong></span></td>
+<td><span class="t-text -right">986,540.94</span></td></tr>
+</tbody></table>
+"""
+
+
 class _FakeSession:
     def __init__(self, assets):
         self._assets = assets
@@ -387,6 +409,41 @@ class DailyEtfPriceRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(etf_rows[0].source, "BORSA_ITALIANA")
         bond_rows = [p for p in session.added if p.asset_id == "asset-btp"]
         self.assertEqual(bond_rows[0].price_date, close_day)
+
+
+class DailyRefreshSchedaNaGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Mid-session regression: a scheda quoting N.A. for the close appends no
+    Price row for that asset (no garbage, no live last-trade relabeled CLOSE),
+    while populated assets still get theirs and dedupe stays intact."""
+
+    async def test_na_scheda_appends_no_row_populated_assets_still_do(self):
+        from workers.tasks.market_data_tasks import _refresh_bond_prices
+
+        bond = Asset(id="asset-btp", symbol="IT0005622128", name="BTP 15OT27 2,70%",
+                     asset_class="BOND", currency="EUR")
+        etf = _etf_asset()  # LU1900066033, ISIN-keyed
+        session = _FakeSession([bond, etf])
+
+        close_day = datetime(2026, 11, 21, tzinfo=timezone.utc)
+
+        async def scheda_page(isin, segment):
+            return ETF_SCHEDA_NA  # market open: closing N.A., last trade 39.56
+
+        with patch("database.AsyncSessionLocal", return_value=session), \
+             patch.object(MarketDataService, "borsa_italiana_official_close",
+                          AsyncMock(return_value=(Decimal("0.9954607"), close_day))), \
+             patch.object(MarketDataService, "_borsa_italiana_page", side_effect=scheda_page):
+            first = await _refresh_bond_prices()
+            second = await _refresh_bond_prices()
+
+        self.assertEqual(first["added"], 1)  # bond only; the N.A. ETF is skipped
+        self.assertEqual(first["bonds"], 1)
+        self.assertEqual(first["etfs"], 0)
+        self.assertEqual(second["added"], 0)  # dedupe intact for populated rows
+        self.assertEqual(len(session.added), 1)
+        rows = [(p.asset_id, p.price_type, p.source) for p in session.added]
+        self.assertEqual(rows, [("asset-btp", "CLOSE", "BORSA_ITALIANA")])
+        self.assertFalse(any(p.asset_id == "asset-amundi" for p in session.added))
 
 
 if __name__ == "__main__":

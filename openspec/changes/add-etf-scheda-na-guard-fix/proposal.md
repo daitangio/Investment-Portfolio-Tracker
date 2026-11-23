@@ -8,7 +8,7 @@ ETF scheda pages on borsaitaliana.it quote "**Closing Price: N.A.**" while the m
 
 - Anchor the ETF scheda "Closing Price" parse to the label's own table cell: the value must appear in the cell that follows the `<strong>Closing Price</strong></span></td><td>` span boundary within a bounded window; a quoted cell that is "N.A." (or non-numeric) yields `None`, never a forward scan.
 - Apply the same bounded-cell rule to the bond "Official Close" price cell in `_parse_borsa_official_close` (the date cell is already bounded by the `add-bond-isin-alias-pricing` rework).
-- The daily refresh task then simply skips such assets for that run (existing behavior when a close is `None`) — no `Price` row, no corrupt history.
+- The daily refresh task then simply skips such assets for that run — no `Price` row, no corrupt history. This also means removing the last-trade fallback in `borsa_etf_official_close` (added by `add-etfplus-etf-pricing`): it fired on the None close mid-session and appended the live last trade as the day's CLOSE row (user-sanctioned during apply; the spec scenario "last trade 39.27 + N.A. → no row" requires it).
 - Fixture tests for the N.A. cell (mid-session markup captured live), the populated cell (post-close markup), and a worker-level test asserting no row is appended when the scheda shows N.A.
 
 ## Capabilities
