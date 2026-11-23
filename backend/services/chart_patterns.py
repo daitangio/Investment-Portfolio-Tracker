@@ -51,7 +51,7 @@ class ChartPatternDetector:
             elif cl in ("low", "l"):          rename[col] = "low"
             elif cl in ("close", "c", "price"): rename[col] = "close"
             elif cl in ("volume", "v"):       rename[col] = "volume"
-        self.df.rename(columns=rename, inplace=True)
+        self.df = self.df.rename(columns=rename)
         required = {"close"}
         if not required.issubset(self.df.columns):
             self.df = pd.DataFrame()
@@ -60,8 +60,8 @@ class ChartPatternDetector:
         for col in ("open", "high", "low", "close", "volume"):
             if col in self.df.columns:
                 self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
-        self.df.dropna(subset=["close"], inplace=True)
-        self.df.reset_index(drop=True, inplace=True)
+        self.df = self.df.dropna(subset=["close"])
+        self.df = self.df.reset_index(drop=True)
 
     # ─── Public ───────────────────────────────────────────────────────────────
 

@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 API_TRANSACTION_SOURCES = {"KRAKEN_API", "COINBASE", "BINANCE", "IBKR_API", "PLAID"}
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 
@@ -62,8 +62,7 @@ class TransactionResponse(BaseModel):
     notes: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ImportResultResponse(BaseModel):

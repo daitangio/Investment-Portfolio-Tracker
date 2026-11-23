@@ -41,13 +41,13 @@ class SignalEngine:
         for col in ("open", "high", "low", "close", "volume"):
             if col in self.df.columns:
                 self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
-        self.df.dropna(subset=["close"], inplace=True)
+        self.df = self.df.dropna(subset=["close"])
         for col in ("open", "high", "low"):
             if col not in self.df.columns:
                 self.df[col] = self.df["close"]
         if "volume" not in self.df.columns:
             self.df["volume"] = 0
-        self.df.reset_index(drop=True, inplace=True)
+        self.df = self.df.reset_index(drop=True)
 
     def analyze(self) -> dict:
         if self.df.empty or len(self.df) < 30:

@@ -128,7 +128,7 @@ class TechnicalAnalysisEngine:
             if col in self._df.columns:
                 self._df[col] = pd.to_numeric(self._df[col], errors="coerce")
 
-        self._df.dropna(subset=["close"], inplace=True)
+        self._df = self._df.dropna(subset=["close"])
         self._ctx = TechnicalContext(num_candles=len(self._df))
 
         if len(self._df) >= 2:
