@@ -124,6 +124,7 @@ class HoldingSnapshot:
     currency: str = "AUD"
     original_currency: str = "AUD"  # Quote currency used for current market prices
     exchange: Optional[str] = None
+    polygon_ticker: Optional[str] = None  # Resolved provider alias (Yahoo ticker for ETF ISINs)
 
 
 @dataclass
@@ -779,6 +780,7 @@ class PortfolioEngine:
                 currency=target_ccy,
                 original_currency=asset_ccy,
                 exchange=asset.exchange,
+                polygon_ticker=asset.polygon_ticker,
             ))
 
         total_unrealized = total_market_value - total_cost_basis

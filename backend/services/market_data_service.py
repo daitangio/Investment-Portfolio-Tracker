@@ -95,7 +95,7 @@ class MarketDataService:
             if price is None:
                 price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
         else:
-            price = await self._get_equity_price(symbol, currency)
+            price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
 
         if price is not None:
             await cache_set(cache_key, price, ttl=60)  # 60s TTL for spot prices
@@ -162,10 +162,12 @@ class MarketDataService:
         end_date: datetime,
         currency: str = "USD",
         asset_class: Optional[str] = None,
+        ticker: Optional[str] = None,
     ) -> list[dict]:
         """
         Get daily OHLCV prices for a symbol over a date range.
         Returns list of {date, open, high, low, close, volume}.
+        `ticker` is the asset's resolved provider alias (e.g. Yahoo ticker for an ETF ISIN).
         """
         cache_suffix = ":AX" if currency.upper() == "AUD" else ""
         cache_key = f"market:history:{symbol}{cache_suffix}:{start_date.date()}:{end_date.date()}"
@@ -176,7 +178,7 @@ class MarketDataService:
         if self._is_crypto(symbol):
             prices = await self._get_crypto_history(symbol, start_date, end_date)
         else:
-            prices = await self._get_equity_history(symbol, start_date, end_date, currency, asset_class=asset_class)
+            prices = await self._get_equity_history(symbol, start_date, end_date, currency, asset_class=asset_class, ticker=ticker)
 
         if prices:
             # Cache historical data for longer
@@ -193,12 +195,14 @@ class MarketDataService:
         asset_class: Optional[str] = None,
         currency: str = "USD",
         exchange: Optional[str] = None,
+        ticker: Optional[str] = None,
     ) -> list[dict]:
         """
         Get OHLCV candles for chart/signal analysis.
 
         interval accepts TradingView-style values used by the frontend:
         "15", "60", "240", "D", "W".
+        `ticker` is the asset's resolved provider alias (e.g. Yahoo ticker for an ETF ISIN).
         """
         interval = interval.upper()
         if interval not in self._YAHOO_INTERVALS:
@@ -214,7 +218,7 @@ class MarketDataService:
             return cached
 
         rows = await self._yahoo_chart_history(
-            symbol=symbol,
+            symbol=ticker or symbol,
             interval=interval,
             start=start_date,
             end=end_date,
@@ -227,14 +231,14 @@ class MarketDataService:
             await cache_set(cache_key, rows, ttl=300 if interval in {"15", "60", "240"} else 3600)
         return rows
 
-    async def get_price_at_date(self, symbol: str, date: datetime) -> Optional[float]:
+    async def get_price_at_date(self, symbol: str, date: datetime, ticker: Optional[str] = None) -> Optional[float]:
         """Get the closing price for a symbol on a specific date."""
         cache_key = f"market:price:{symbol}:{date.date()}:close"
         cached = await cache_get(cache_key)
         if cached is not None:
             return cached
 
-        prices = await self.get_historical_prices(symbol, date, date + timedelta(days=1))
+        prices = await self.get_historical_prices(symbol, date, date + timedelta(days=1), ticker=ticker)
         if prices:
             price = prices[-1]["close"]
             await cache_set(cache_key, price, ttl=86400)  # Cache historical prices 24h
@@ -248,7 +252,12 @@ class MarketDataService:
         self, symbol: str, currency: str = "USD", asset_class: Optional[str] = None, ticker: Optional[str] = None
     ) -> Optional[float]:
         """Polygon → Yahoo Finance fallback. Currency hint for exchange resolution."""
-        # Bonds and other ISIN-keyed instruments: Borsa Italiana first
+        # ETF ISINs: Borsa Italiana ETFPlus scheda page (ISIN-keyed, EUR per share)
+        if asset_class in ("ETF", None) and self._is_isin(symbol):
+            price = await self._borsa_etf_spot(symbol)
+            if price is not None:
+                return price
+        # Bonds and other ISIN-keyed instruments: Borsa Italiana MOT first
         if asset_class == "BOND" or (asset_class is None and self._is_isin(symbol)):
             price = await self._borsa_italiana_spot(symbol)
             if price is not None:
@@ -365,8 +374,25 @@ class MarketDataService:
                 day = None
         return price, day
 
+    @classmethod
+    def _parse_borsa_etf_ticker(cls, html: str) -> Optional[str]:
+        """Scheda instrument table: <strong>Alphanumeric Code</strong> ...
+        <span class="t-text -right">CHIP</span>"""
+        m = re.search(r'Alphanumeric Code</strong>.*?t-text -right">\s*([A-Z0-9]{2,12}?)\s*</span>', html, re.S)
+        return m.group(1) if m else None
+
+    @classmethod
+    def _parse_borsa_closing_price(cls, html: str) -> Optional[float]:
+        """Scheda market-data table: <strong>Closing Price</strong> ...
+        <span class="t-text -right">81.39</span>"""
+        m = re.search(r'Closing Price</strong>.*?t-text -right">\s*([\d]+(?:[.,][\d]+)?)\s*</span>', html, re.S)
+        return cls._parse_it_float(m.group(1)) if m else None
+
     async def _borsa_italiana_page(self, isin: str, segment: str) -> Optional[str]:
-        url = f"{self._BORSA_BASE}/borsa/obbligazioni/mot/{segment}/scheda/{isin}-MOTX.html?lang=en"
+        if segment == "etf":
+            url = f"{self._BORSA_BASE}/borsa/etf/scheda/{isin}-ETFP.html?lang=en"
+        else:
+            url = f"{self._BORSA_BASE}/borsa/obbligazioni/mot/{segment}/scheda/{isin}-MOTX.html?lang=en"
         try:
             resp = await self._http.get(url, headers=self._UA)
         except Exception as e:
@@ -440,8 +466,57 @@ class MarketDataService:
                 return self._borsa_price_per_eur(close[0]), close[1] or datetime.now(timezone.utc)
         return None
 
-    async def resolve_isin_to_ticker(self, isin: str) -> Optional[str]:
-        """Resolve an ISIN (e.g. an ETF) to a Yahoo Finance ticker via symbol search."""
+    # ─── Borsa Italiana ETFPlus (ETFs priced by ISIN) ─────────────────────
+
+    async def _borsa_etf_spot(self, isin: str) -> Optional[float]:
+        """Last-trade price in EUR for an ETF ISIN from the ETFPlus scheda page.
+        ETFs quote per-share EUR — no percent-of nominal normalization."""
+        isin = isin.upper()
+        html = await self._borsa_italiana_page(isin, "etf")
+        if html is None:
+            return None
+        price = self._parse_borsa_last_price(html)
+        if price is None:
+            price = self._parse_borsa_closing_price(html)
+        return price
+
+    async def borsa_etf_official_close(self, isin: str) -> Optional[float]:
+        """Day's closing price in EUR for an ETF ISIN from the ETFPlus scheda
+        page (the page carries no explicit date; the caller dates the row)."""
+        isin = isin.upper()
+        html = await self._borsa_italiana_page(isin, "etf")
+        if html is None:
+            return None
+        price = self._parse_borsa_closing_price(html)
+        if price is None:
+            price = self._parse_borsa_last_price(html)
+        return price
+
+    async def resolve_isin_to_ticker(self, isin: str, currency: str = "EUR") -> Optional[str]:
+        """Resolve an ISIN (e.g. an ETF) to a Yahoo Finance ticker.
+
+        Preference order: the Borsa Italiana ETFPlus scheda page's Alphanumeric
+        Code (Milan listing, EUR) first; Yahoo symbol search as fallback, chosen
+        among candidates whose chart-metadata currency matches `currency`
+        (Milan listings preferred). Candidates whose currency disagrees are
+        rejected, never stored.
+        """
+        isin = (isin or "").upper()
+        if not isin:
+            return None
+
+        html = await self._borsa_italiana_page(isin, "etf")
+        if html is not None:
+            code = self._parse_borsa_etf_ticker(html)
+            if code:
+                ticker = f"{code}.MI"
+                meta_ccy = (await self._yahoo_meta_currency(ticker) or "").upper()
+                # The scheda page IS the Milan listing in EUR: validation is
+                # best-effort (Yahoo 429s under rate limiting) and only a
+                # concrete currency mismatch blocks storing it.
+                if meta_ccy == "" or meta_ccy == (currency or "EUR").upper():
+                    return ticker
+
         try:
             resp = await self._http.get(
                 "https://query1.finance.yahoo.com/v1/finance/search",
@@ -449,24 +524,47 @@ class MarketDataService:
                 params={"q": isin, "quotesCount": 8, "newsCount": 0},
             )
             resp.raise_for_status()
-            for quote in resp.json().get("quotes", []):
-                if quote.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND") and quote.get("symbol"):
-                    return quote["symbol"]
+            candidates = [
+                q["symbol"]
+                for q in resp.json().get("quotes", [])
+                if q.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND") and q.get("symbol")
+            ]
         except Exception as e:
             logger.debug(f"Yahoo ISIN search failed for {isin}: {e}")
+            return None
+
+        candidates.sort(key=lambda s: not s.endswith(".MI"))  # prefer Milan listing
+        for sym in candidates[:3]:  # at most 3 currency-validation calls
+            if (await self._yahoo_meta_currency(sym) or "").upper() == (currency or "EUR").upper():
+                return sym
         return None
 
-    async def _get_equity_history(self, symbol: str, start: datetime, end: datetime, currency: str = "USD", asset_class: Optional[str] = None) -> list[dict]:
-        """Fetch OHLCV from Polygon or Yahoo."""
+    async def _yahoo_meta_currency(self, symbol: str) -> Optional[str]:
+        """Currency reported by Yahoo chart metadata for a symbol (validation)."""
+        try:
+            resp = await self._http.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                headers=self._UA,
+                params={"interval": "1d", "range": "1d"},
+            )
+            resp.raise_for_status()
+            return resp.json()["chart"]["result"][0]["meta"].get("currency")
+        except Exception as e:
+            logger.debug(f"Yahoo chart meta {symbol}: {e}")
+            return None
+
+    async def _get_equity_history(self, symbol: str, start: datetime, end: datetime, currency: str = "USD", asset_class: Optional[str] = None, ticker: Optional[str] = None) -> list[dict]:
+        """Fetch OHLCV from Polygon or Yahoo, preferring the resolved ticker alias."""
+        lookup = ticker or symbol
         if currency.upper() != "AUD":
             try:
-                prices = await self._polygon_history(symbol, start, end)
+                prices = await self._polygon_history(lookup, start, end)
                 if prices:
                     return self._normalize_history_rows(prices, asset_class, symbol)
             except Exception:
                 pass
         try:
-            prices = await self._yahoo_history(symbol, start, end, currency)
+            prices = await self._yahoo_history(lookup, start, end, currency)
             return self._normalize_history_rows(prices, asset_class, symbol)
         except Exception:
             return []

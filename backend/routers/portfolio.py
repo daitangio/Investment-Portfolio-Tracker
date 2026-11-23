@@ -385,6 +385,7 @@ async def _period_price_return_by_asset(
                         end,
                         currency=quote_ccy,
                         asset_class=holding.asset_class,
+                        ticker=holding.polygon_ticker,
                     )
                 if len(prices) < 2:
                     return holding.asset_id, None

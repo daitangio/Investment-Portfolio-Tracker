@@ -365,7 +365,9 @@ class AnalyticsEngine:
             try:
                 async with semaphore:
                     sym_ccy = FXService._normalize_currency(holdings_by_symbol[sym].original_currency or "USD")
-                    prices = await self.market_data.get_historical_prices(sym, start, end, currency=sym_ccy)
+                    prices = await self.market_data.get_historical_prices(
+                        sym, start, end, currency=sym_ccy, ticker=holdings_by_symbol[sym].polygon_ticker
+                    )
                     if not prices:
                         logger.warning(f"No historical prices returned for {sym}")
                     return sym, prices or []

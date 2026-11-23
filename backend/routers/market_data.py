@@ -51,17 +51,29 @@ async def get_price_history(
     start: datetime = Query(..., description="Start date"),
     end: Optional[datetime] = Query(None, description="End date (default: today)"),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get historical daily OHLCV prices."""
     if end is None:
         from datetime import timezone
         end = datetime.now(timezone.utc)
 
+    sym = symbol.upper()
+    # Resolve the stored alias (e.g. Yahoo ticker for an ETF ISIN) if this symbol is a known asset
+    asset = (await db.execute(select(Asset).where(Asset.symbol == sym))).scalar_one_or_none()
+
     svc = MarketDataService()
-    history = await svc.get_historical_prices(symbol.upper(), start, end)
+    history = await svc.get_historical_prices(
+        sym,
+        start,
+        end,
+        currency=(asset.currency if asset else None) or "USD",
+        asset_class=asset.asset_class if asset else None,
+        ticker=asset.polygon_ticker if asset else None,
+    )
     await svc.close()
 
-    return {"symbol": symbol.upper(), "data": history}
+    return {"symbol": sym, "data": history}
 
 
 @router.get("/assets/search")

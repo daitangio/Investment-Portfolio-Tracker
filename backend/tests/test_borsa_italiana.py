@@ -21,6 +21,27 @@ BORSA_HTML = """
 </table>
 """
 
+# Markup captured from the ETFPlus scheda page (LU1900066033,
+# /borsa/etf/scheda/LU1900066033-ETFP.html — Amundi MSCI Semiconductors)
+BORSA_ETF_HTML = """
+<div class="l-box u-pt u-pb"> <div class="summary-value">
+<span class="t-text -black-warm-60 -formatPrice">
+<strong>81.39</strong>
+</span> </div>
+<table><tbody>
+<tr><td><span class="t-text"><strong>Day Low</strong></span></td>
+<td><span class="t-text -right">81.34</span></td></tr>
+<tr><td><span class="t-text"><strong>Closing Price</strong></span></td>
+<td><span class="t-text -right">81.39</span></td></tr>
+</tbody></table>
+<table><tbody>
+<tr><td><span class="t-text"><strong>Alphanumeric Code</strong></span></td>
+<td><span class="t-text -right">CHIP</span></td></tr>
+<tr><td><span class="t-text"><strong>Isin Code</strong></span></td>
+<td><span class="t-text -right">LU1900066033</span></td></tr>
+</tbody></table>
+"""
+
 
 class FakeResp:
     def __init__(self, status_code: int, text: str = ""):
@@ -39,6 +60,29 @@ class FakeHttp:
             if url.startswith(prefix):
                 return resp
         return FakeResp(404)
+
+
+def json_resp(payload):
+    class JsonResp(FakeResp):
+        def __init__(self):
+            super().__init__(200, "")
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    return JsonResp()
+
+
+async def _cache_none(_key):
+    return None
+
+
+async def _cache_noop(_key, _value, ttl=None):
+    return None
 
 
 class BorsaItalianaTests(unittest.IsolatedAsyncioTestCase):
@@ -119,23 +163,133 @@ class BorsaItalianaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resolve_isin_to_ticker(self):
         svc = MarketDataService.__new__(MarketDataService)
-
-        class JsonResp(FakeResp):
-            def __init__(self):
-                super().__init__(200, "")
-                self._json = {"quotes": [
+        svc._http = FakeHttp({
+            "https://query1.finance.yahoo.com/v1/finance/search": json_resp({
+                "quotes": [
                     {"quoteType": "NEWS", "symbol": "X"},
                     {"quoteType": "ETF", "symbol": "IWMO.DE"},
-                ]}
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return self._json
-
-        svc._http = FakeHttp({"https://query1.finance.yahoo.com/v1/finance/search": JsonResp()})
+                ]
+            }),
+            "https://query1.finance.yahoo.com/v8/finance/chart/IWMO.DE": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "EUR"}}], "error": None}}
+            ),
+        })
         self.assertEqual(await svc.resolve_isin_to_ticker("IE00B1YZSC51"), "IWMO.DE")
+
+    async def test_resolve_prefers_borsa_page_ticker(self):
+        # LU1900066033: Borsa scheda Alphanumeric Code CHIP -> CHIP.MI, no search at all
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.MI": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "EUR"}}], "error": None}}
+            ),
+        })
+        self.assertEqual(await svc.resolve_isin_to_ticker("LU1900066033"), "CHIP.MI")
+        self.assertFalse(any("/search" in url for url in svc._http.calls))
+
+    async def test_resolve_rejects_currency_mismatch(self):
+        # Only candidate is the Swiss listing whose Yahoo metadata says USD -> nothing stored
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._http = FakeHttp({
+            "https://query1.finance.yahoo.com/v1/finance/search": json_resp({
+                "quotes": [{"quoteType": "ETF", "symbol": "CHIP.SW"}]
+            }),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.SW": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "USD"}}], "error": None}}
+            ),
+        })
+        self.assertIsNone(await svc.resolve_isin_to_ticker("LU1900066033"))
+
+    async def test_resolve_prefers_mi_listing_among_candidates(self):
+        # Search returns Swiss and Milan hits; the EUR Milan listing wins
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._http = FakeHttp({
+            "https://query1.finance.yahoo.com/v1/finance/search": json_resp({
+                "quotes": [
+                    {"quoteType": "ETF", "symbol": "CHIP.SW"},
+                    {"quoteType": "ETF", "symbol": "CHIP.MI"},
+                ]
+            }),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.SW": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "USD"}}], "error": None}}
+            ),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.MI": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "EUR"}}], "error": None}}
+            ),
+        })
+        self.assertEqual(await svc.resolve_isin_to_ticker("LU1900066033"), "CHIP.MI")
+
+
+    async def test_resolve_rejects_page_ticker_on_concrete_mismatch(self):
+        # Scheda-page ticker whose Yahoo metadata contradicts the asset currency -> rejected
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.MI": json_resp(
+                {"chart": {"result": [{"meta": {"currency": "CHF"}}], "error": None}}
+            ),
+        })
+        self.assertIsNone(await svc.resolve_isin_to_ticker("LU1900066033"))
+
+    async def test_resolve_keeps_page_ticker_when_validation_unavailable(self):
+        # Yahoo rate-limits (429): the scheda page IS the Milan listing, so its
+        # ticker is stored; only a concrete currency mismatch blocks it.
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML),
+            "https://query1.finance.yahoo.com/v8/finance/chart/CHIP.MI": FakeResp(429, "Too Many Requests"),
+        })
+        self.assertEqual(await svc.resolve_isin_to_ticker("LU1900066033"), "CHIP.MI")
+
+
+class BorsaEtfPlusTests(unittest.IsolatedAsyncioTestCase):
+    """ETF ISINs price from the ETFPlus scheda page in EUR per share —
+    never divided by 100 (that normalization is bond % of nominal only)."""
+
+    def test_parse_etf_ticker_and_closing_price(self):
+        self.assertEqual(MarketDataService._parse_borsa_etf_ticker(BORSA_ETF_HTML), "CHIP")
+        self.assertAlmostEqual(MarketDataService._parse_borsa_closing_price(BORSA_ETF_HTML), 81.39)
+
+    def test_parse_etf_garbage_returns_none(self):
+        self.assertIsNone(MarketDataService._parse_borsa_etf_ticker("<html>nope</html>"))
+        self.assertIsNone(MarketDataService._parse_borsa_closing_price("<html>nope</html>"))
+
+    async def test_etf_spot_eur_not_normalized(self):
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML)})
+        price = await svc._borsa_etf_spot("LU1900066033")
+        self.assertAlmostEqual(price, 81.39)  # EUR per share, NOT 0.8139
+
+    async def test_etf_spot_falls_back_to_closing_price(self):
+        # summary-value destroyed (99.99 garbage); Closing Price row must take over
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        html = BORSA_ETF_HTML.replace('formatPrice"><strong>81.39', 'formatPrice"><strong>99.99')
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, html)})
+        self.assertAlmostEqual(await svc._borsa_etf_spot("LU1900066033"), 81.39)
+
+    async def test_etf_isin_priced_from_borsa_before_yahoo(self):
+        # Only the scheda page route exists: the chain must stop at Borsa (81.39)
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._asx_symbols = set()
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML)})
+        price = await svc._get_equity_price("LU1900066033", "EUR", asset_class="ETF", ticker="CHIP.MI")
+        self.assertAlmostEqual(price, 81.39)
+        self.assertFalse(any("finance.yahoo" in url for url in svc._http.calls))
+
+    async def test_get_price_etf_isin_uses_etfplus(self):
+        from unittest.mock import patch
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._asx_symbols = set()
+        svc._http = FakeHttp({"https://www.borsaitaliana.it/borsa/etf/": FakeResp(200, BORSA_ETF_HTML)})
+        with patch("services.market_data_service.cache_get", new=_cache_none), \
+             patch("services.market_data_service.cache_set", new=_cache_noop):
+            price = await svc.get_price("LU1900066033", "EUR", asset_class="ETF")
+        self.assertAlmostEqual(price, 81.39)
 
 
 class NormalizeBondPriceTests(unittest.TestCase):

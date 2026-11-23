@@ -28,7 +28,7 @@ def fetch_crypto_prices() -> dict[str, str]:
 
 @celery_app.task(name="workers.tasks.market_data_tasks.refresh_bond_prices")
 def refresh_bond_prices() -> dict:
-    """Daily: append Borsa Italiana official closes for all BOND assets to Price."""
+    """Daily: append Borsa Italiana closes for BOND assets and ETFPlus ETF assets to Price."""
     import asyncio
 
     return asyncio.run(_refresh_bond_prices())
@@ -48,19 +48,32 @@ async def _refresh_bond_prices() -> dict:
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(Asset).where(Asset.asset_class == "BOND", Asset.is_active == True)  # noqa: E712
+                select(Asset).where(Asset.asset_class.in_(("BOND", "ETF")), Asset.is_active == True)  # noqa: E712
             )
-            bonds = result.scalars().all()
+            rows = result.scalars().all()
             added = 0
-            for asset in bonds:
+            n_bonds = n_etfs = 0
+            for asset in rows:
                 isin = (asset.isin or asset.symbol or "").upper()
                 if not isin:
                     continue
-                close = await svc.borsa_italiana_official_close(isin, svc.borsa_type_segments(asset.name))
-                if not close:
-                    continue
-                price, day = close
-                day = day or datetime.now(timezone.utc)
+                if asset.asset_class == "BOND":
+                    close = await svc.borsa_italiana_official_close(isin, svc.borsa_type_segments(asset.name))
+                    if not close:
+                        continue
+                    price, day = close
+                    day = day or datetime.now(timezone.utc)
+                    n_bonds += 1
+                else:
+                    # ETFs: only ISIN-keyed holdings are priced on the ETFPlus scheda page
+                    if not MarketDataService._is_isin(isin):
+                        continue
+                    price = await svc.borsa_etf_official_close(isin)
+                    if not price:
+                        continue
+                    # The scheda page carries no explicit date: keep one row per day
+                    day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    n_etfs += 1
                 exists = await session.execute(
                     select(Price.id).where(
                         Price.asset_id == asset.id,
@@ -81,7 +94,13 @@ async def _refresh_bond_prices() -> dict:
                 ))
                 added += 1
             await session.commit()
-            logger.info("refresh_bond_prices: %d/%d bond closes stored", added, len(bonds))
-            return {"status": "ok", "task": "refresh_bond_prices", "added": added, "bonds": len(bonds)}
+            logger.info(
+                "refresh_bond_prices: %d closes stored (%d bond assets, %d ETF assets)",
+                added, n_bonds, n_etfs,
+            )
+            return {
+                "status": "ok", "task": "refresh_bond_prices",
+                "added": added, "bonds": n_bonds, "etfs": n_etfs,
+            }
     finally:
         await svc._http.aclose()
