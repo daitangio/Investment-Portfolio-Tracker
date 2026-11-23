@@ -50,6 +50,15 @@ class MarketDataService:
 
     # Borsa Italiana MOT path segments to try for Italian government bonds
     _BOND_SEGMENTS = ("btp", "bot", "cct", "ctz", "btp-italia", "btp-valore", "btp-green", "btp-futura")
+    # Retail BTPs issued from Feb 2025 carry two ISINs: the placement ISIN held
+    # in custody (what bank statements and the Intesa import show) and the
+    # definitive market ISIN quoted on MOT, announced by MEF at placement close.
+    # Only the market ISIN has a MOT scheda page, so quotes route through it.
+    _BOND_ISIN_ALIASES = {
+        "IT0005713539": "IT0005713547",  # BTP Italia Sì 23GN31 1,60CUM
+        "IT0005634792": "IT0005634800",  # BTP Più 25FB33 SU PUT
+        "IT0005696320": "IT0005696338",  # BTP Valore 10MZ32 SU CUM
+    }
     _BORSA_BASE = "https://www.borsaitaliana.it"
     _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
 
@@ -61,6 +70,14 @@ class MarketDataService:
     @classmethod
     def _is_isin(cls, symbol: str) -> bool:
         return bool(symbol) and bool(cls._ISIN_RE.match(symbol))
+
+    @classmethod
+    def _market_isin(cls, isin: Optional[str]) -> Optional[str]:
+        """Definitive market ISIN for a bond: dual-ISIN retail BTPs are placed
+        under a "special" custody ISIN but quoted on MOT under the "regular"
+        one (see _BOND_ISIN_ALIASES). Unmapped ISINs pass through unchanged."""
+        upper = (isin or "").upper()
+        return cls._BOND_ISIN_ALIASES.get(upper, upper) or None
 
     @classmethod
     def borsa_type_segments(cls, name: Optional[str]) -> list[str]:
@@ -368,11 +385,30 @@ class MarketDataService:
         day = None
         dm = re.search(r'Official Close Date</strong>.*?t-text -right">\s*(\d{2}/\d{2}/\d{2,4})', html, re.S)
         if dm:
-            try:
-                day = datetime.strptime(dm.group(1), "%d/%m/%y" if len(dm.group(1)) == 8 else "%d/%m/%Y").replace(tzinfo=timezone.utc)
-            except ValueError:
-                day = None
+            day = cls._parse_borsa_close_date(dm.group(1))
         return price, day
+
+    @classmethod
+    def _parse_borsa_close_date(cls, text: str) -> Optional[datetime]:
+        """The scheda "Official Close Date" cell. Borsa prints it YY/MM/DD (e.g.
+        "26/11/20" = 2026-11-20, last close before 23 Nov 2026). Read it that
+        way when plausible, falling back to DD/MM/YY(YY); close dates are
+        always recent, so readings outside a ~2-year window are rejected."""
+        try:
+            a, b, c = (int(part) for part in text.split("/"))
+        except ValueError:
+            return None
+        now = datetime.now(timezone.utc)
+        for year, month, day in ((2000 + a, b, c), (c if c >= 100 else 2000 + c, b, a)):
+            if not 2000 <= year <= 2100:
+                continue
+            try:
+                parsed = datetime(year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if abs((parsed - now).days) <= 730:
+                return parsed
+        return None
 
     @classmethod
     def _parse_borsa_etf_ticker(cls, html: str) -> Optional[str]:
@@ -430,8 +466,9 @@ class MarketDataService:
 
     async def _borsa_italiana_spot(self, isin: str, segments: Optional[list[str]] = None) -> Optional[float]:
         """Last-trade price (fallback: official close) for a bond ISIN from Borsa
-        Italiana, normalized to EUR per EUR of nominal."""
-        isin = isin.upper()
+        Italiana, normalized to EUR per EUR of nominal. Dual-ISIN placement ISINs
+        resolve to their market ISIN (_BOND_ISIN_ALIASES) before fetching."""
+        isin = self._market_isin(isin)
         if isin in self._bond_segment_cache:
             candidates = [self._bond_segment_cache[isin]]
         else:
@@ -453,8 +490,9 @@ class MarketDataService:
         self, isin: str, segments: Optional[list[str]] = None
     ) -> Optional[tuple[float, datetime]]:
         """Official close price (EUR per EUR of nominal) + date for a bond ISIN
-        (used by the daily refresh task)."""
-        isin = isin.upper()
+        (used by the daily refresh task). Dual-ISIN placement ISINs resolve to
+        their market ISIN (_BOND_ISIN_ALIASES) before fetching."""
+        isin = self._market_isin(isin.upper())
         candidates = [self._bond_segment_cache[isin]] if isin in self._bond_segment_cache else (segments or list(self._BOND_SEGMENTS))
         for segment in candidates:
             html = await self._borsa_italiana_page(isin, segment)

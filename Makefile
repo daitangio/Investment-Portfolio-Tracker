@@ -27,7 +27,7 @@ PIP := ./.venv/bin/pip
 
 .EXPORT_ALL_VARIABLES:
 
-.PHONY: ensure-env ensure-volumes serve dev docker restart rebuild clean-rebuild stop logs logs-backend logs-frontend status infra backend frontend dev-local install backend-install frontend-install type-check test repair-assets repair-etf-tickers push open help
+.PHONY: ensure-env ensure-volumes serve dev docker restart rebuild clean-rebuild stop logs logs-backend logs-frontend status infra backend frontend dev-local install backend-install frontend-install type-check test repair-assets repair-etf-tickers repair-bond-isin-aliases push open help
 
 ensure-env: ## Create .env from .env.example if missing
 	@if [ ! -f "$(ENV_FILE)" ]; then \
@@ -114,6 +114,9 @@ repair-assets: ## Dry-run repair of ASX holdings stored as USD (APPLY=1 to commi
 
 repair-etf-tickers: ## Dry-run backfill of Yahoo tickers for ETF ISIN assets (APPLY=1 to commit)
 	$(COMPOSE) exec backend python scripts/repair_etf_tickers.py $(if $(APPLY),--apply,)
+
+repair-bond-isin-aliases: ## Suggest _BOND_ISIN_ALIASES pairs from the MEF Scadenze PDF (dry-run; PDF=path URL=url if download is blocked)
+	$(COMPOSE) exec backend python scripts/repair_bond_isin_aliases.py $(if $(PDF),--pdf $(PDF),$(if $(URL),--url $(URL),))
 
 open: ## Open frontend in browser
 	open $(APP_URL)

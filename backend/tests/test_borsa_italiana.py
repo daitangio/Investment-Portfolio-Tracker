@@ -104,7 +104,9 @@ class BorsaItalianaTests(unittest.IsolatedAsyncioTestCase):
         close = MarketDataService._parse_borsa_official_close(BORSA_HTML)
         self.assertIsNotNone(close)
         self.assertAlmostEqual(close[0], 99.54607)
-        self.assertEqual(close[1], datetime(2013, 11, 26, tzinfo=timezone.utc))
+        # Scheda close-date cell is YY/MM/DD: "26/11/13" = 2026-11-13 (Friday's
+        # close on the captured page), not 2013-11-26 (the old DD/MM/YY reading)
+        self.assertEqual(close[1], datetime(2026, 11, 13, tzinfo=timezone.utc))
 
     def test_parse_garbage_returns_none(self):
         self.assertIsNone(MarketDataService._parse_borsa_last_price("<html>nope</html>"))
@@ -159,7 +161,8 @@ class BorsaItalianaTests(unittest.IsolatedAsyncioTestCase):
         close = await svc.borsa_italiana_official_close("IT0005622128", segments=["btp"])
         self.assertIsNotNone(close)
         self.assertAlmostEqual(close[0], 0.9954607)  # normalized to EUR per EUR
-        self.assertEqual(close[1].date().isoformat(), "2013-11-26")
+        # "26/11/13" reads YY/MM/DD = 2026-11-13 (page captured mid-Nov 2026)
+        self.assertEqual(close[1].date().isoformat(), "2026-11-13")
 
     async def test_resolve_isin_to_ticker(self):
         svc = MarketDataService.__new__(MarketDataService)
@@ -290,6 +293,79 @@ class BorsaEtfPlusTests(unittest.IsolatedAsyncioTestCase):
              patch("services.market_data_service.cache_set", new=_cache_noop):
             price = await svc.get_price("LU1900066033", "EUR", asset_class="ETF")
         self.assertAlmostEqual(price, 81.39)
+
+
+class BondIsinAliasTests(unittest.IsolatedAsyncioTestCase):
+    """Dual-ISIN retail BTPs (MEF "special"/"regular" codes): the custodied
+    placement ISIN has no MOT scheda page — quotes route via the market ISIN."""
+
+    def test_market_isin_passthrough_and_resolution(self):
+        self.assertEqual(MarketDataService._market_isin("IT0005622128"), "IT0005622128")
+        self.assertEqual(MarketDataService._market_isin("it0005622128"), "IT0005622128")
+        self.assertIsNone(MarketDataService._market_isin(None))
+        self.assertEqual(MarketDataService._market_isin("IT0005713539"), "IT0005713547")
+        self.assertEqual(MarketDataService._market_isin("IT0005634792"), "IT0005634800")
+        self.assertEqual(MarketDataService._market_isin("IT0005696320"), "IT0005696338")
+
+    async def test_spot_routes_placement_isin_to_market_scheda(self):
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/obbligazioni/mot/btp/scheda/IT0005713547-MOTX.html": FakeResp(200, BORSA_HTML),
+        })
+        price = await svc._borsa_italiana_spot("IT0005713539", segments=["btp"])
+        self.assertAlmostEqual(price, 0.99529)  # MOT last 99.529 ÷ 100
+        urls = " ".join(svc._http.calls)
+        self.assertIn("IT0005713547", urls)
+        self.assertNotIn("IT0005713539", urls)  # the custody ISIN has no page
+        self.assertEqual(svc._bond_segment_cache["IT0005713547"], "btp")
+
+    async def test_official_close_routes_placement_isin(self):
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/obbligazioni/mot/btp/scheda/IT0005634800-MOTX.html": FakeResp(200, BORSA_HTML),
+        })
+        close = await svc.borsa_italiana_official_close("IT0005634792", segments=["btp"])
+        self.assertAlmostEqual(close[0], 0.9954607)
+        urls = " ".join(svc._http.calls)
+        self.assertIn("IT0005634800", urls)
+        self.assertNotIn("IT0005634792", urls)
+
+    async def test_unmapped_bond_fetched_by_own_isin(self):
+        # Pre-Feb-2025 retail bonds quote under their own ISIN — regression guard
+        svc = MarketDataService.__new__(MarketDataService)
+        svc._bond_segment_cache = {}
+        svc._http = FakeHttp({
+            "https://www.borsaitaliana.it/borsa/obbligazioni/mot/btp/": FakeResp(200, BORSA_HTML),
+        })
+        price = await svc._borsa_italiana_spot("IT0005622128", segments=["btp"])
+        self.assertAlmostEqual(price, 0.99529)
+        self.assertIn("IT0005622128", " ".join(svc._http.calls))
+
+
+class OfficialCloseDateParseTests(unittest.TestCase):
+    """The scheda close-date cell is YY/MM/DD; readings that are not plausible
+    recent closes fall back to DD/MM/YY(YY); nothing plausible yields None."""
+
+    def test_close_date_short_form_reads_yymmdd(self):
+        close = MarketDataService._parse_borsa_official_close(
+            BORSA_HTML.replace("26/11/13", "26/11/20"))
+        self.assertEqual(close[1].date().isoformat(), "2026-11-20")  # not 2020-11-26
+
+    def test_close_date_long_form_ddmmyyyy_fallback(self):
+        # 4-digit year: YY/MM/DD reading gives year 2611 — impossible, so DD/MM/YYYY
+        close = MarketDataService._parse_borsa_official_close(
+            BORSA_HTML.replace("26/11/13", "20/11/2026"))
+        self.assertEqual(close[1].date().isoformat(), "2026-11-20")
+
+    def test_implausible_close_date_yields_none(self):
+        # 31 Feb is not a calendar day in either reading
+        close = MarketDataService._parse_borsa_official_close(
+            BORSA_HTML.replace("26/11/13", "31/02/26"))
+        self.assertIsNotNone(close)  # the price still parses
+        self.assertIsNone(close[1])  # the date does not
+        self.assertIsNone(MarketDataService._parse_borsa_close_date("15/06/91"))
 
 
 class NormalizeBondPriceTests(unittest.TestCase):
@@ -423,6 +499,85 @@ class NormalizeHistoryRowsTests(unittest.TestCase):
 
     def test_empty_rows(self):
         self.assertEqual(MarketDataService._normalize_history_rows([], "BOND", "IT0005735201"), [])
+
+
+class _RefreshResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
+
+class _RefreshSession:
+    """AsyncSession fake for the daily refresh task (same routing pattern as
+    test_etf_market_data._FakeSession, kept inline per this file's style)."""
+
+    def __init__(self, assets):
+        self._assets = assets
+        self.added = []
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def execute(self, query):
+        if getattr(query, "column_descriptions", [{}])[0].get("entity").__name__ == "Asset":
+            return _RefreshResult(self._assets)
+        params = query.compile().params
+        aid = next((v for k, v in params.items() if k.startswith("asset_id")), None)
+        day = next((v for k, v in params.items() if k.startswith("price_date")), None)
+        hit = next((p for p in self.added if p.asset_id == aid and p.price_date == day), None)
+        return _RefreshResult([hit] if hit else [])
+
+
+class RefreshBondPricesDateTests(unittest.IsolatedAsyncioTestCase):
+    """Daily refresh with real scheda markup: rows are dated by the YY/MM/DD
+    close cell and a second run for the same close appends no duplicate."""
+
+    async def test_refresh_stores_true_close_date_and_dedupes(self):
+        from unittest.mock import AsyncMock, patch
+        from shared.models import Asset
+
+        from workers.tasks.market_data_tasks import _refresh_bond_prices
+
+        # Placement ISIN held in custody (Intesa sheet); market ISIN = IT0005696338
+        placement = Asset(
+            id="asset-btp-valore", symbol="IT0005696320", name="BTPVAL 10MZ32 SU CUM",
+            asset_class="BOND", currency="EUR",
+        )
+        session = _RefreshSession([placement])
+        scheda = BORSA_HTML.replace("26/11/13", "26/11/20")
+        with patch("database.AsyncSessionLocal", return_value=session), \
+             patch.object(MarketDataService, "_borsa_italiana_page", AsyncMock(return_value=scheda)):
+            first = await _refresh_bond_prices()
+            second = await _refresh_bond_prices()
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["bonds"], 1)
+        self.assertEqual(first["added"], 1)
+        self.assertEqual(second["added"], 0)  # same close date: no duplicate
+        row = session.added[0]
+        self.assertEqual(row.asset_id, "asset-btp-valore")  # keyed on the custody ISIN
+        self.assertEqual(row.price_date.date().isoformat(), "2026-11-20")  # not 2020-11-26
+        self.assertAlmostEqual(float(row.price), 0.9954607)
+        self.assertEqual(row.source, "BORSA_ITALIANA")
+        self.assertEqual(row.currency, "EUR")
 
 
 if __name__ == "__main__":
