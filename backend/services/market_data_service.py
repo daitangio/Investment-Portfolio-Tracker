@@ -61,6 +61,16 @@ class MarketDataService:
         "IT0005713539": "IT0005713547",  # BTP Italia Sì 23GN31 1,60CUM
         "IT0005634792": "IT0005634800",  # BTP Più 25FB33 SU PUT
         "IT0005696320": "IT0005696338",  # BTP Valore 10MZ32 SU CUM
+
+
+        # Elenco aggiuntivo, ottenuto a mano da interfaccia della chat
+        "IT0005517187":"IT0005517195",
+        "IT0005388175":"IT0005388167",
+        "IT0005496994":"IT0005497000",
+        "IT0005583478":"IT0005583486",
+        "IT0005442089": "IT0005442097",  # live MOT scheda quote 76.47
+        "IT0005425753": "IT0005425761",  # live MOT scheda quote 95.14
+
     }
     _BORSA_BASE = "https://www.borsaitaliana.it"
     _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
