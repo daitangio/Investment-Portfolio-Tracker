@@ -1,3 +1,4 @@
+#!python
 """Suggest _BOND_ISIN_ALIASES entries from the Treasury's "Scadenze" master data.
 
 DRY-RUN helper: extracts placement("speciale")→market("regolare") ISIN pairs

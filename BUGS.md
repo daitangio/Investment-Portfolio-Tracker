@@ -11,3 +11,5 @@ La soluzione per ora è una mappa statica vedi change [*add-bond-isin-alias-pric
 # Altro bug add-etf-scheda-na-guard-fix
 
 "When the scheda's Closing Price cell is N.A. mid-session (with a live last trade showing), how should borsa_etf_official_close behave? The last-trade fallback (from the archived add-etfplus-etf-pricing change) currently fires on a None close and would append a mid-session row, violating this change's spec scenario. Which behavior do you want?" → Remove fallback
+
+The change is ready for your review — archive it with /openspec-archive-change after validating (e.g. on tonight's post-close beat run, the ETF rows should appear dated 2026-11-23 with real closing prices).
