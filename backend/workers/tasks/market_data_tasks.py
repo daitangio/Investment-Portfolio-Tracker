@@ -57,12 +57,21 @@ async def _refresh_bond_prices() -> dict:
                 isin = (asset.isin or asset.symbol or "").upper()
                 if not isin:
                     continue
+                source = "BORSA_ITALIANA"
                 if asset.asset_class == "BOND":
                     close = await svc.borsa_italiana_official_close(isin, svc.borsa_type_segments(asset.name))
+                    if not close:
+                        # Borsa Italiana unavailable (error/429): btpfacile.it fallback
+                        close = await svc.btpfacile_official_close(isin)
+                        if close:
+                            source = "BTPFACILE"
                     if not close:
                         continue
                     price, day = close
                     day = day or datetime.now(timezone.utc)
+                    if source == "BTPFACILE":
+                        # one BTPFACILE row per asset per date: truncate the quote timestamp
+                        day = day.replace(hour=0, minute=0, second=0, microsecond=0)
                     n_bonds += 1
                 else:
                     # ETFs: only ISIN-keyed holdings are priced on the ETFPlus scheda page
@@ -79,7 +88,7 @@ async def _refresh_bond_prices() -> dict:
                         Price.asset_id == asset.id,
                         Price.price_date == day,
                         Price.price_type == "CLOSE",
-                        Price.source == "BORSA_ITALIANA",
+                        Price.source == source,
                     )
                 )
                 if exists.scalar_one_or_none():
@@ -90,7 +99,7 @@ async def _refresh_bond_prices() -> dict:
                     currency=asset.currency or "EUR",
                     price_date=day,
                     price_type="CLOSE",
-                    source="BORSA_ITALIANA",
+                    source=source,
                 ))
                 added += 1
             await session.commit()

@@ -73,6 +73,7 @@ class MarketDataService:
 
     }
     _BORSA_BASE = "https://www.borsaitaliana.it"
+    _BTPFACILE_BASE = "https://btpfacile.it"
     _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
 
     def __init__(self):
@@ -120,10 +121,9 @@ class MarketDataService:
         if self._is_crypto(symbol):
             price = await self._get_crypto_price(symbol)
         elif asset_class == "BOND" or (asset_class is None and self._is_isin(symbol)):
-            # Italian government bonds etc. are priced by ISIN on Borsa Italiana
-            price = await self._borsa_italiana_spot(symbol)
-            if price is None:
-                price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
+            # Italian government bonds etc. are priced by ISIN: Borsa Italiana MOT,
+            # btpfacile.it fallback, then Yahoo/Polygon (chain inside _get_equity_price)
+            price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
         else:
             price = await self._get_equity_price(symbol, currency, asset_class=asset_class)
 
@@ -287,9 +287,12 @@ class MarketDataService:
             price = await self._borsa_etf_spot(symbol)
             if price is not None:
                 return price
-        # Bonds and other ISIN-keyed instruments: Borsa Italiana MOT first
+        # Bonds and other ISIN-keyed instruments: Borsa Italiana MOT first,
+        # btpfacile.it as fallback (e.g. on Borsa 429/errors), then Yahoo/Polygon
         if asset_class == "BOND" or (asset_class is None and self._is_isin(symbol)):
             price = await self._borsa_italiana_spot(symbol)
+            if price is None:
+                price = await self._btpfacile_spot(symbol)
             if price is not None:
                 return price
 
@@ -523,6 +526,102 @@ class MarketDataService:
                 self._bond_segment_cache[isin] = segment
                 return self._borsa_price_per_eur(close[0]), close[1] or datetime.now(timezone.utc)
         return None
+
+    # ─── btpfacile.it (BTP fallback provider) ─────────────────────────────
+
+    async def _btpfacile_page(self, isin: str) -> Optional[str]:
+        """Per-ISIN BTP page on btpfacile.it (/it/btp/{ISIN}). Non-BTP ISINs get
+        a 302 redirect to the home page; httpx does not follow redirects, so any
+        non-200 (302 included) or exception returns None and the caller falls
+        through to the next provider."""
+        url = f"{self._BTPFACILE_BASE}/it/btp/{isin}"
+        try:
+            resp = await self._http.get(url, headers=self._UA)
+        except Exception as e:
+            logger.debug(f"btpfacile {isin}: {e}")
+            return None
+        if resp.status_code != 200:
+            logger.debug(f"btpfacile {isin}: HTTP {resp.status_code}")
+            return None
+        return resp.text
+
+    @staticmethod
+    def _parse_it_comma_float(text: str) -> Optional[float]:
+        """btpfacile prints comma decimals ('99,58'); dot is the thousands sep."""
+        try:
+            return float(text.replace(".", "").replace(",", "."))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_btpfacile_quote(cls, html: str) -> Optional[float]:
+        """Big quote badge on the per-ISIN page (% of nominal, comma decimal):
+        <span class="bg-warning fs-1 txt-col-black xtxt-b px-2 py-1">99,58</span>
+        Falls back to the h2 sentence '... con prezzo di 99,58 ...'."""
+        m = re.search(r'<span class="bg-warning fs-1[^"]*">\s*([\d]+(?:[.,]\d+)?)\s*</span>', html)
+        if not m:
+            m = re.search(r'prezzo di\s*([\d]+(?:[.,]\d+)?)', html)
+        return cls._parse_it_comma_float(m.group(1)) if m else None
+
+    @classmethod
+    def _parse_btpfacile_quote_date(cls, html: str) -> Optional[datetime]:
+        """'Ultimo aggiornamento prezzo' cell on the per-ISIN page (DD/MM/YYYY
+        HH:MM[:SS]): <span class="fs-6">Ultimo aggiornamento prezzo</span><br />
+        <b>24/11/2026 17:47:24</b>. Falls back to the h2 wording 'ultima
+        quotazione del 24/11/2026 17:47' or 'ultima quotazione oggi ore 17:56'
+        (today at HH:MM). Readings outside a ~2-year window are rejected."""
+        m = re.search(
+            r'Ultimo aggiornamento prezzo</span><br\s*/?>\s*<b>\s*'
+            r'(\d{2})/(\d{2})/(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*</b>',
+            html,
+        )
+        if not m:
+            m = re.search(r'ultima quotazione del\s*(\d{2})/(\d{2})/(\d{4})\s+(\d{2}):(\d{2})', html)
+        if m:
+            ss = int(m.group(6)) if (m.lastindex or 0) >= 6 and m.group(6) else 0
+            return cls._plausible_quote_date(int(m.group(3)), int(m.group(2)), int(m.group(1)),
+                                             int(m.group(4)), int(m.group(5)), ss)
+        m = re.search(r'ultima quotazione oggi ore\s*(\d{1,2}):(\d{2})', html)
+        if m:
+            now = datetime.now(timezone.utc)
+            return cls._plausible_quote_date(now.year, now.month, now.day, int(m.group(1)), int(m.group(2)), 0)
+        return None
+
+    @staticmethod
+    def _plausible_quote_date(year: int, month: int, day: int, hh: int, mm: int, ss: int) -> Optional[datetime]:
+        try:
+            parsed = datetime(year, month, day, hh, mm, ss, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        if abs((parsed - datetime.now(timezone.utc)).days) <= 730:
+            return parsed
+        return None
+
+    async def _btpfacile_spot(self, isin: str) -> Optional[float]:
+        """Live quote for a BTP ISIN from btpfacile.it, normalized to EUR per
+        EUR of nominal (quote is % of nominal, same as MOT). Dual-ISIN placement
+        ISINs resolve to their market ISIN (_BOND_ISIN_ALIASES) before fetching."""
+        isin = self._market_isin(isin.upper())
+        html = await self._btpfacile_page(isin)
+        if html is None:
+            return None
+        quote = self._parse_btpfacile_quote(html)
+        if quote is None:
+            return None
+        return self._borsa_price_per_eur(quote)
+
+    async def btpfacile_official_close(self, isin: str) -> Optional[tuple[float, Optional[datetime]]]:
+        """Quote + 'ultimo aggiornamento prezzo' timestamp from btpfacile.it for
+        the daily refresh when Borsa Italiana is unavailable. Price normalized
+        to EUR per EUR of nominal; date None when not parseable."""
+        isin = self._market_isin(isin.upper())
+        html = await self._btpfacile_page(isin)
+        if html is None:
+            return None
+        quote = self._parse_btpfacile_quote(html)
+        if quote is None:
+            return None
+        return self._borsa_price_per_eur(quote), self._parse_btpfacile_quote_date(html)
 
     # ─── Borsa Italiana ETFPlus (ETFs priced by ISIN) ─────────────────────
 
