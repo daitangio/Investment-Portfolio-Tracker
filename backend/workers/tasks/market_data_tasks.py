@@ -52,7 +52,7 @@ async def _refresh_bond_prices() -> dict:
             )
             rows = result.scalars().all()
             added = 0
-            n_bonds = n_etfs = 0
+            n_bonds = n_etfs = n_btpfacile = 0
             for asset in rows:
                 isin = (asset.isin or asset.symbol or "").upper()
                 if not isin:
@@ -65,6 +65,7 @@ async def _refresh_bond_prices() -> dict:
                         close = await svc.btpfacile_official_close(isin)
                         if close:
                             source = "BTPFACILE"
+                            n_btpfacile += 1
                     if not close:
                         continue
                     price, day = close
@@ -104,8 +105,8 @@ async def _refresh_bond_prices() -> dict:
                 added += 1
             await session.commit()
             logger.info(
-                "refresh_bond_prices: %d closes stored (%d bond assets, %d ETF assets)",
-                added, n_bonds, n_etfs,
+                "refresh_bond_prices: %d closes stored (%d bond assets, %d via btpfacile, %d ETF assets)",
+                added, n_bonds, n_btpfacile, n_etfs,
             )
             return {
                 "status": "ok", "task": "refresh_bond_prices",

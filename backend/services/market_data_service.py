@@ -293,6 +293,8 @@ class MarketDataService:
             price = await self._borsa_italiana_spot(symbol)
             if price is None:
                 price = await self._btpfacile_spot(symbol)
+                if price is not None:
+                    logger.info(f"btpfacile.it fallback price for {symbol}: {price}")
             if price is not None:
                 return price
 
@@ -557,11 +559,22 @@ class MarketDataService:
     def _parse_btpfacile_quote(cls, html: str) -> Optional[float]:
         """Big quote badge on the per-ISIN page (% of nominal, comma decimal):
         <span class="bg-warning fs-1 txt-col-black xtxt-b px-2 py-1">99,58</span>
-        Falls back to the h2 sentence '... con prezzo di 99,58 ...'."""
+        Falls back to the h2 sentence '... con prezzo di 99,58 ...'. Real quotes
+        are % of nominal, always within [10, 300]; anything outside (a
+        dot-decimal '99.58' misread as thousands → 9958, a zero, a coupon-sized
+        leak, a reused badge cell) is unparseable → None, never a silent ~100x price."""
         m = re.search(r'<span class="bg-warning fs-1[^"]*">\s*([\d]+(?:[.,]\d+)?)\s*</span>', html)
         if not m:
             m = re.search(r'prezzo di\s*([\d]+(?:[.,]\d+)?)', html)
-        return cls._parse_it_comma_float(m.group(1)) if m else None
+        if not m:
+            return None
+        quote = cls._parse_it_comma_float(m.group(1))
+        # Plausibility guard, same idea as _plausible_quote_date's 730-day window.
+        if quote is None or not 10.0 <= quote <= 300.0:
+            # GG  added            
+            logger.warning(f"BTP Quote is implausible: {quote}")
+            return None
+        return quote
 
     @classmethod
     def _parse_btpfacile_quote_date(cls, html: str) -> Optional[datetime]:

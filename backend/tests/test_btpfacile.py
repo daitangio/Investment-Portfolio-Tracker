@@ -31,6 +31,11 @@ BORSA_BOND_HTML = """
 """
 
 
+def _badge(quote: str) -> str:
+    """Quote badge exactly as on the btpfacile per-ISIN page."""
+    return f'<span class="bg-warning fs-1 txt-col-black xtxt-b px-2 py-1">{quote}</span>'
+
+
 class FakeResp:
     def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
@@ -151,6 +156,20 @@ class BtpFacileParseTests(unittest.TestCase):
     def test_parse_garbage_returns_none(self):
         self.assertIsNone(MarketDataService._parse_btpfacile_quote("<html>nope</html>"))
 
+    def test_parse_quote_plausibility_guard(self):
+        """Quotes are % of nominal within [10, 300]: dot-decimal misreads
+        ('99.58' → 9958), truncated thousands ('1.234' → 1234), a zero and
+        coupon-sized leaks parse to None → the chain falls through instead of
+        ever storing a silent ~100x price. Boundaries stay plausible."""
+        self.assertIsNone(MarketDataService._parse_btpfacile_quote(_badge("99.58")))
+        self.assertIsNone(MarketDataService._parse_btpfacile_quote(_badge("1.234")))
+        self.assertIsNone(MarketDataService._parse_btpfacile_quote(_badge("9500")))
+        self.assertIsNone(MarketDataService._parse_btpfacile_quote(_badge("0")))
+        self.assertIsNone(MarketDataService._parse_btpfacile_quote(_badge("2,70")))  # coupon, not a quote
+        self.assertAlmostEqual(MarketDataService._parse_btpfacile_quote(_badge("10,00")), 10.0)
+        self.assertAlmostEqual(MarketDataService._parse_btpfacile_quote(_badge("99,58")), 99.58)
+        self.assertAlmostEqual(MarketDataService._parse_btpfacile_quote(_badge("300")), 300.0)
+
 
 class BtpFacileQuoteDateTests(unittest.TestCase):
     """Task 4.2: dedicated date-parsing unit tests for _parse_btpfacile_quote_date."""
@@ -225,16 +244,21 @@ class BtpFacileFallbackChainTests(unittest.IsolatedAsyncioTestCase):
             "https://www.borsaitaliana.it/": FakeResp(429),
             "https://btpfacile.it/": FakeResp(200, BTPFACILE_HTML),
         })
-        price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
+        with self.assertLogs("services.market_data_service", level="INFO") as cm:
+            price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
         self.assertAlmostEqual(price, 0.9958)
         self.assertTrue(any("btpfacile.it" in u for u in svc._http.calls))
+        # The fallback serving the price is visible at INFO
+        self.assertTrue(any(f"btpfacile.it fallback price for IT0005622128: {price}" in line
+                            for line in cm.output), cm.output)
 
     async def test_borsa_success_never_touches_btpfacile(self):
         svc = _svc({
             "https://www.borsaitaliana.it/": FakeResp(200, BORSA_BOND_HTML),
             "https://btpfacile.it/": FakeResp(200, BTPFACILE_HTML),
         })
-        price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
+        with self.assertNoLogs("services.market_data_service", level="INFO"):
+            price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
         self.assertAlmostEqual(price, 0.99529)
         self.assertFalse(any("btpfacile.it" in u for u in svc._http.calls))
 
@@ -249,6 +273,20 @@ class BtpFacileFallbackChainTests(unittest.IsolatedAsyncioTestCase):
         })
         price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
         self.assertAlmostEqual(price, 0.9958)  # normalized ÷100 like every bond source
+
+    async def test_btpfacile_implausible_quote_falls_through_to_yahoo(self):
+        # Plausibility guard: a dot-decimal badge '99.50' would be a thousands
+        # misread (9950%) — rejected like any other btpfacile failure, so the
+        # chain proceeds to Yahoo and Yahoo's quote (88.88) wins.
+        svc = _svc({
+            "https://www.borsaitaliana.it/": FakeResp(429),
+            "https://btpfacile.it/": FakeResp(200, _badge("99.50")),
+            "https://query1.finance.yahoo.com/": json_resp(
+                {"chart": {"result": [{"meta": {"regularMarketPrice": 88.88}}]}}
+            ),
+        })
+        price = await svc._get_equity_price("IT0005622128", "EUR", asset_class="BOND")
+        self.assertAlmostEqual(price, 0.8888)  # Yahoo's 88.88 ÷100, not the rejected badge
 
     async def test_get_price_bond_uses_btpfacile_on_borsa_429(self):
         svc = _svc({
@@ -277,8 +315,9 @@ class DailyRefreshBtpFacileTests(unittest.IsolatedAsyncioTestCase):
              patch.object(MarketDataService, "borsa_italiana_official_close", AsyncMock(return_value=None)), \
              patch.object(MarketDataService, "btpfacile_official_close",
                           AsyncMock(return_value=(0.9958, quote_ts))):
-            first = await _refresh_bond_prices()
-            second = await _refresh_bond_prices()
+            with self.assertLogs("workers.tasks.market_data_tasks", level="INFO") as cm:
+                first = await _refresh_bond_prices()
+                second = await _refresh_bond_prices()
 
         self.assertEqual(first["added"], 1)
         self.assertEqual(first["bonds"], 1)
@@ -290,6 +329,11 @@ class DailyRefreshBtpFacileTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(float(row.price), 0.9958)
         # one row per date: the quote timestamp is truncated to midnight
         self.assertEqual(row.price_date, datetime(2026, 11, 24, tzinfo=timezone.utc))
+        # The refresh summary names btpfacile as the source so outages are visible
+        summaries = [l for l in cm.output if "refresh_bond_prices:" in l]
+        self.assertEqual(len(summaries), 2)
+        for s in summaries:
+            self.assertIn("1 via btpfacile", s)
 
 
 if __name__ == "__main__":
